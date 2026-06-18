@@ -24,15 +24,9 @@ jobs:
           pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
       - name: Download ORT C API header
-        shell: pwsh
         run: |
-          $ortVersion = python -c "import onnxruntime; print(onnxruntime.__version__)"
-          echo "ORT version: $ortVersion"
           mkdir ort_include
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/microsoft/onnxruntime/v$ortVersion/include/onnxruntime/core/session/onnxruntime_c_api.h" -OutFile "ort_include/onnxruntime_c_api.h"
-          if (-not (Test-Path "ort_include/onnxruntime_c_api.h")) {
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/onnxruntime_c_api.h" -OutFile "ort_include/onnxruntime_c_api.h"
-          }
+          curl -L -o ort_include/onnxruntime_c_api.h "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/onnxruntime_c_api.h"
           dir ort_include
 
       - name: Compile GridSample3D custom op DLL
