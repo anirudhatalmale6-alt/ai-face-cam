@@ -27,9 +27,15 @@ jobs:
         run: |
           python download_models_minimal.py
 
+      - name: Get OpenCV data path
+        id: cv2path
+        run: |
+          $cv2data = python -c "import cv2; print(cv2.data.haarcascades)"
+          echo "CV2_DATA=$cv2data" >> $env:GITHUB_OUTPUT
+
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCam3D --console --add-data "models;models" --collect-all insightface --collect-all onnxruntime --hidden-import scipy.spatial --hidden-import pyvirtualcam face_cam_3d.py
+          pyinstaller --onefile --name AIFaceCam3D --console --add-data "models;models" --add-data "${{ steps.cv2path.outputs.CV2_DATA }};cv2/data" --collect-all insightface --collect-all onnxruntime --hidden-import scipy.spatial --hidden-import pyvirtualcam face_cam_3d.py
 
       - name: Verify exe exists
         run: |

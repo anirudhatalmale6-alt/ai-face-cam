@@ -129,21 +129,28 @@ def detect_landmarks(image, face_app=None):
                 bbox = face.bbox.astype(int)
                 if lm is not None:
                     return lm, bbox
-        except Exception:
-            pass
+                print("  InsightFace: face found but no 106 landmarks, using bbox only")
+                return None, bbox
+        except Exception as e:
+            print(f"  InsightFace detection error: {e}")
 
     h, w = image.shape[:2]
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+    try:
+        xml_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        if os.path.exists(xml_path):
+            cascade = cv2.CascadeClassifier(xml_path)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+            if len(faces) > 0:
+                x, y, fw, fh = faces[np.argmax([fw * fh for (x, y, fw, fh) in faces])]
+                bbox = np.array([x, y, x + fw, y + fh])
+                return None, bbox
+    except Exception as e:
+        print(f"  Haar cascade unavailable: {e}")
 
-    if len(faces) > 0:
-        x, y, fw, fh = faces[np.argmax([fw * fh for (x, y, fw, fh) in faces])]
-        bbox = np.array([x, y, x + fw, y + fh])
-    else:
-        m = min(w, h) // 6
-        bbox = np.array([m, m, w - m, h - m])
-
+    m = min(w, h) // 6
+    bbox = np.array([m, m, w - m, h - m])
+    print(f"  Using center-crop face estimate: {bbox}")
     return None, bbox
 
 
