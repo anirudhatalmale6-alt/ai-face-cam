@@ -23,20 +23,23 @@ jobs:
         run: |
           pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
-      - name: Get ORT include path
-        id: ortpath
+      - name: Download ORT C API header
         shell: pwsh
         run: |
-          $ortInclude = python -c "import onnxruntime; import os; print(os.path.join(os.path.dirname(onnxruntime.__file__), 'capi', 'include'))"
-          echo "ORT_INCLUDE=$ortInclude" >> $env:GITHUB_OUTPUT
-          echo "ORT include: $ortInclude"
-          dir $ortInclude
+          $ortVersion = python -c "import onnxruntime; print(onnxruntime.__version__)"
+          echo "ORT version: $ortVersion"
+          mkdir ort_include
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/microsoft/onnxruntime/v$ortVersion/include/onnxruntime/core/session/onnxruntime_c_api.h" -OutFile "ort_include/onnxruntime_c_api.h"
+          if (-not (Test-Path "ort_include/onnxruntime_c_api.h")) {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/onnxruntime_c_api.h" -OutFile "ort_include/onnxruntime_c_api.h"
+          }
+          dir ort_include
 
       - name: Compile GridSample3D custom op DLL
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cl /LD /O2 /I "${{ steps.ortpath.outputs.ORT_INCLUDE }}" grid_sample_3d_ort.c /Fe:grid_sample_3d_ort.dll /link /DEF:NUL
+          cl /LD /O2 /I ort_include grid_sample_3d_ort.c /Fe:grid_sample_3d_ort.dll
           dir grid_sample_3d_ort.dll
 
       - name: Build exe
