@@ -450,27 +450,29 @@ class LivePortraitEngine:
             return None
 
         src = self.src_info
-        pitch_new = src["pitch"] + pitch_delta
-        yaw_new = src["yaw"] + yaw_delta
-        roll_new = src["roll"] + roll_delta
-
-        R_new = get_rotation_matrix(pitch_new, yaw_new, roll_new)
-
-        exp_new = src["exp"].copy() * exp_scale
         num_kp = src["num_kp"]
-        if blink > 0 and num_kp >= 21:
-            exp_new[0, 11, 1] -= blink * 0.15
-            exp_new[0, 13, 1] -= blink * 0.15
-        if smile > 0 and num_kp >= 21:
-            exp_new[0, 14, 0] += smile * 0.08
-            exp_new[0, 17, 0] -= smile * 0.08
-            exp_new[0, 14, 1] -= smile * 0.03
-            exp_new[0, 17, 1] -= smile * 0.03
-        if mouth > 0 and num_kp >= 21:
-            exp_new[0, 19, 1] += mouth * 0.12
-            exp_new[0, 20, 1] -= mouth * 0.05
 
-        x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + exp_new) + src["t"][:, None, :]
+        R_delta = get_rotation_matrix(
+            np.array([pitch_delta]),
+            np.array([yaw_delta]),
+            np.array([roll_delta])
+        )
+        R_new = R_delta @ src["R_s"]
+
+        exp_delta = np.zeros_like(src["exp"])
+        if blink > 0 and num_kp >= 21:
+            exp_delta[0, 11, 1] -= blink * 0.15
+            exp_delta[0, 13, 1] -= blink * 0.15
+        if smile > 0 and num_kp >= 21:
+            exp_delta[0, 14, 0] += smile * 0.08
+            exp_delta[0, 17, 0] -= smile * 0.08
+            exp_delta[0, 14, 1] -= smile * 0.03
+            exp_delta[0, 17, 1] -= smile * 0.03
+        if mouth > 0 and num_kp >= 21:
+            exp_delta[0, 19, 1] += mouth * 0.12
+            exp_delta[0, 20, 1] -= mouth * 0.05
+
+        x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + src["exp"] + exp_delta) + src["t"][:, None, :]
 
         feat_stitch = np.concatenate([
             src["x_s"].reshape(1, -1),
