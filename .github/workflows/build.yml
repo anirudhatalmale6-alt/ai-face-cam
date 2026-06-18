@@ -23,11 +23,15 @@ jobs:
         run: |
           pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
-      - name: Download ORT C API header
+      - name: Download ORT C API headers
         run: |
           mkdir ort_include
-          curl -L -o ort_include/onnxruntime_c_api.h "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/onnxruntime_c_api.h"
+          $headers = @("onnxruntime_c_api.h","onnxruntime_error_code.h","onnxruntime_float16.h","onnxruntime_session_options_config_keys.h","onnxruntime_run_options_config_keys.h")
+          foreach ($h in $headers) {
+            curl -sL -o "ort_include/$h" "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/$h"
+          }
           dir ort_include
+        shell: pwsh
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
