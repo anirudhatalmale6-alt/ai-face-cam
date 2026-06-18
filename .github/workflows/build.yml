@@ -29,10 +29,12 @@ jobs:
           curl -L -o ort_include/onnxruntime_c_api.h "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session/onnxruntime_c_api.h"
           dir ort_include
 
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Compile GridSample3D custom op DLL
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cl /LD /O2 /I ort_include grid_sample_3d_ort.c /Fe:grid_sample_3d_ort.dll
           dir grid_sample_3d_ort.dll
 
