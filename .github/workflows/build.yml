@@ -1,0 +1,36 @@
+name: Build Windows Exe
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install opencv-python numpy pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --name AIFaceCam --icon NONE face_cam.py
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: AI Face Cam v1.0 Build ${{ github.run_number }}
+          files: dist/AIFaceCam.exe
+          make_latest: true
