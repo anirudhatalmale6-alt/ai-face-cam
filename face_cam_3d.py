@@ -154,10 +154,10 @@ def detect_landmarks(image, face_app=None):
     return None, bbox
 
 
-class PerspectiveFaceAnimator:
+class DepthFaceAnimator:
     """
-    Realistic face animation using perspective transforms for head rotation
-    and localized deformations for facial expressions.
+    3D face animation using depth-based parallax warping.
+    Nose moves more than ears when head turns - looks like real 3D rotation.
     """
 
     def __init__(self, face_image, face_app=None):
@@ -195,13 +195,13 @@ class PerspectiveFaceAnimator:
         self.breath_t = 0.0
 
         self.bg_color = self._detect_bg_color()
-
-        self._prepare_source()
+        self._create_depth_map()
+        self._precompute_grids()
 
         if landmarks is not None:
             print(f"  Face detected: {len(landmarks)} landmarks")
         else:
-            print(f"  Face detected: approximate (Haar cascade)")
+            print(f"  Face detected: approximate")
 
     def _extract_features_from_landmarks(self):
         lm = self.landmarks
@@ -215,6 +215,10 @@ class PerspectiveFaceAnimator:
         pad = 5
         self.mouth_rect = (int(mx - pad), int(my - pad),
                           int(mxx - mx + 2 * pad), int(mxy - my + 2 * pad))
+        if len(lm) > 86:
+            self.nose_tip = lm[86]
+        else:
+            self.nose_tip = np.array([self.face_cx, self.face_cy - self.face_h * 0.02])
 
     def _get_eye_rect(self, pts):
         x, y = pts.min(axis=0)
@@ -238,6 +242,7 @@ class PerspectiveFaceAnimator:
 
         mw, mh = int(fw * 0.35), int(fh * 0.12)
         self.mouth_rect = (int(cx - mw // 2), int(cy + fh * 0.2), mw, mh)
+        self.nose_tip = np.array([cx, cy - fh * 0.02])
 
     def _detect_bg_color(self):
         img = self.original
@@ -247,43 +252,36 @@ class PerspectiveFaceAnimator:
             samples.append(img[y, x])
         return np.median(samples, axis=0).astype(np.uint8)
 
-    def _prepare_source(self):
-        """Prepare source image with padding for rotation"""
-        pad = int(max(self.img_w, self.img_h) * 0.15)
-        self.pad = pad
-        bg = self.bg_color.reshape(1, 1, 3)
-        padded = np.full((self.img_h + 2 * pad, self.img_w + 2 * pad, 3),
-                        bg, dtype=np.uint8)
-        padded[pad:pad + self.img_h, pad:pad + self.img_w] = self.original
+    def _create_depth_map(self):
+        """Create ellipsoidal depth map - nose protrudes, sides recede"""
+        h, w = self.img_h, self.img_w
+        cx, cy = self.face_cx, self.face_cy
+        a = max(self.face_w / 2, 1)
+        b = max(self.face_h / 2, 1)
 
-        edge_w = 20
-        for i in range(edge_w):
-            alpha = i / edge_w
-            top = pad + i
-            bot = pad + self.img_h - 1 - i
-            left = pad + i
-            right = pad + self.img_w - 1 - i
-            padded[top, pad:pad + self.img_w] = (
-                padded[top, pad:pad + self.img_w].astype(float) * alpha +
-                bg.astype(float) * (1 - alpha)
-            ).astype(np.uint8)
-            padded[bot, pad:pad + self.img_w] = (
-                padded[bot, pad:pad + self.img_w].astype(float) * alpha +
-                bg.astype(float) * (1 - alpha)
-            ).astype(np.uint8)
-            padded[pad:pad + self.img_h, left] = (
-                padded[pad:pad + self.img_h, left].astype(float) * alpha +
-                bg.astype(float) * (1 - alpha)
-            ).astype(np.uint8)
-            padded[pad:pad + self.img_h, right] = (
-                padded[pad:pad + self.img_h, right].astype(float) * alpha +
-                bg.astype(float) * (1 - alpha)
-            ).astype(np.uint8)
+        Y, X = np.mgrid[0:h, 0:w].astype(np.float32)
+        nx = (X - cx) / a
+        ny = (Y - cy) / b
+        r2 = nx ** 2 + ny ** 2
 
-        self.padded_source = padded
-        self.padded_h, self.padded_w = padded.shape[:2]
-        self.padded_cx = self.face_cx + pad
-        self.padded_cy = self.face_cy + pad
+        depth = np.where(r2 < 1.0, np.sqrt(np.maximum(0, 1.0 - r2)), 0).astype(np.float32)
+
+        nose_x, nose_y = int(self.nose_tip[0]), int(self.nose_tip[1])
+        nose_bump = np.zeros_like(depth)
+        nose_r = int(a * 0.18)
+        cv2.circle(nose_bump, (nose_x, nose_y), nose_r, 0.35, -1)
+        nose_bump = cv2.GaussianBlur(nose_bump, (nose_r * 2 + 1, nose_r * 2 + 1), nose_r * 0.5)
+        depth += nose_bump
+
+        depth = cv2.GaussianBlur(depth, (15, 15), 5)
+        self.depth_map = depth
+
+    def _precompute_grids(self):
+        """Precompute coordinate grids for fast remap"""
+        h, w = self.img_h, self.img_w
+        self.grid_y, self.grid_x = np.mgrid[0:h, 0:w].astype(np.float32)
+        self.norm_x = (self.grid_x - self.face_cx) / max(self.face_w / 2, 1)
+        self.norm_y = (self.grid_y - self.face_cy) / max(self.face_h / 2, 1)
 
     def update(self, dt):
         self.micro_t += dt
@@ -306,22 +304,10 @@ class PerspectiveFaceAnimator:
                 self.blink = 0.0
                 self.is_blinking = False
 
-    def _apply_expressions(self, img):
-        """Apply blink/smile/mouth on the source image before rotation"""
-        if self.blink > 0.1:
-            self._apply_blink(img, self.blink)
-        if self.smile > 0.1:
-            self._apply_smile(img, self.smile)
-        if self.mouth_open > 0.1:
-            self._apply_mouth_open(img, self.mouth_open)
-        return img
-
     def _apply_blink(self, img, amount):
-        """Close eyes by stretching skin above eye downward"""
         for eye_rect in [self.left_eye_rect, self.right_eye_rect]:
             x, y, w, h = eye_rect
-            x = max(0, x)
-            y = max(0, y)
+            x, y = max(0, x), max(0, y)
             if x + w > img.shape[1] or y + h > img.shape[0]:
                 continue
 
@@ -336,7 +322,6 @@ class PerspectiveFaceAnimator:
                 continue
 
             lid_stretched = cv2.resize(lid, (w, cover_h), interpolation=cv2.INTER_LINEAR)
-
             end_y = min(y + cover_h, img.shape[0])
             actual_h = end_y - y
             if actual_h > 0 and actual_h <= lid_stretched.shape[0]:
@@ -345,187 +330,129 @@ class PerspectiveFaceAnimator:
                 overlay = lid_stretched[:actual_h].astype(float)
                 img[y:end_y, x:x + w] = (overlay * alpha_strip + region * (1 - alpha_strip)).astype(np.uint8)
 
-            blur_y = max(0, y - 2)
-            blur_end = min(img.shape[0], end_y + 2)
-            if blur_end > blur_y:
-                roi = img[blur_y:blur_end, max(0, x - 1):min(img.shape[1], x + w + 1)]
-                if roi.size > 0:
-                    cv2.GaussianBlur(roi, (3, 3), 0.8, dst=roi)
-
     def _apply_smile(self, img, amount):
-        """Warp mouth corners upward for smile"""
         mx, my, mw, mh = self.mouth_rect
         if mx < 0 or my < 0 or mx + mw > img.shape[1] or my + mh > img.shape[0]:
             return
-
         region = img[my:my + mh, mx:mx + mw].copy()
         if region.size == 0:
             return
-
         rh, rw = region.shape[:2]
-        map_x = np.zeros((rh, rw), dtype=np.float32)
-        map_y = np.zeros((rh, rw), dtype=np.float32)
-
-        for py in range(rh):
-            for px in range(rw):
-                nx = (px / rw - 0.5) * 2
-                ny = (py / rh - 0.5) * 2
-
-                dx = nx * amount * 0.05
-                dy = -abs(nx) * amount * 0.08 * (1 - ny * 0.3)
-
-                map_x[py, px] = px - dx * rw / 2
-                map_y[py, px] = py - dy * rh / 2
-
+        PX, PY = np.meshgrid(np.arange(rw, dtype=np.float32), np.arange(rh, dtype=np.float32))
+        nx = (PX / rw - 0.5) * 2
+        ny = (PY / rh - 0.5) * 2
+        dx = nx * amount * 0.05
+        dy = -np.abs(nx) * amount * 0.08 * (1 - ny * 0.3)
+        map_x = PX - dx * rw / 2
+        map_y = PY - dy * rh / 2
         warped = cv2.remap(region, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-
         mask = np.zeros((rh, rw), dtype=np.float32)
         cv2.ellipse(mask, (rw // 2, rh // 2), (rw // 2 - 2, rh // 2 - 2), 0, 0, 360, 1.0, -1)
         cv2.GaussianBlur(mask, (7, 7), 3, dst=mask)
         mask3 = np.stack([mask] * 3, axis=-1)
-
-        blended = (warped.astype(float) * mask3 +
-                  region.astype(float) * (1 - mask3)).astype(np.uint8)
-        img[my:my + mh, mx:mx + mw] = blended
+        img[my:my + mh, mx:mx + mw] = (warped * mask3 + region * (1 - mask3)).astype(np.uint8)
 
     def _apply_mouth_open(self, img, amount):
-        """Open mouth by stretching lower region and darkening center"""
         mx, my, mw, mh = self.mouth_rect
         if mx < 0 or my < 0 or mx + mw > img.shape[1] or my + mh > img.shape[0]:
             return
-
-        cx_local = mw // 2
-        cy_local = mh // 2
-
+        dark_y = my + mh // 2
+        dark_x = mx + mw // 2
         open_h = int(mh * amount * 0.4)
         open_w = int(mw * 0.4)
-
-        dark_y = my + cy_local
-        dark_x = mx + cx_local
-
         cv2.ellipse(img, (dark_x, dark_y + int(open_h * 0.3)),
-                   (open_w // 2, max(1, open_h // 2)),
-                   0, 0, 360, (20, 15, 15), -1)
-        cv2.GaussianBlur(
-            img[max(0, dark_y - open_h):min(img.shape[0], dark_y + open_h),
-                max(0, dark_x - open_w):min(img.shape[1], dark_x + open_w)],
-            (5, 5), 2,
-            dst=img[max(0, dark_y - open_h):min(img.shape[0], dark_y + open_h),
-                    max(0, dark_x - open_w):min(img.shape[1], dark_x + open_w)]
-        )
-
-    def _get_head_pose_transform(self, yaw, pitch, roll):
-        """Compute perspective homography for 3D head rotation"""
-        cx, cy = self.padded_cx, self.padded_cy
-        f = self.img_w * 1.2
-
-        yaw_rad = math.radians(yaw)
-        pitch_rad = math.radians(pitch)
-        roll_rad = math.radians(roll)
-
-        Ry = np.array([
-            [math.cos(yaw_rad), 0, math.sin(yaw_rad)],
-            [0, 1, 0],
-            [-math.sin(yaw_rad), 0, math.cos(yaw_rad)]
-        ])
-
-        Rx = np.array([
-            [1, 0, 0],
-            [0, math.cos(pitch_rad), -math.sin(pitch_rad)],
-            [0, math.sin(pitch_rad), math.cos(pitch_rad)]
-        ])
-
-        Rz = np.array([
-            [math.cos(roll_rad), -math.sin(roll_rad), 0],
-            [math.sin(roll_rad), math.cos(roll_rad), 0],
-            [0, 0, 1]
-        ])
-
-        R = Rz @ Ry @ Rx
-
-        K = np.array([
-            [f, 0, cx],
-            [0, f, cy],
-            [0, 0, 1]
-        ], dtype=np.float64)
-
-        K_inv = np.linalg.inv(K)
-        H = K @ R @ K_inv
-
-        return H
+                   (open_w // 2, max(1, open_h // 2)), 0, 0, 360, (20, 15, 15), -1)
+        y1c = max(0, dark_y - open_h)
+        y2c = min(img.shape[0], dark_y + open_h)
+        x1c = max(0, dark_x - open_w)
+        x2c = min(img.shape[1], dark_x + open_w)
+        if y2c > y1c and x2c > x1c:
+            roi = img[y1c:y2c, x1c:x2c]
+            cv2.GaussianBlur(roi, (5, 5), 2, dst=roi)
 
     def render(self):
-        """Render one frame"""
+        """Render with depth-based parallax: nose moves more than sides"""
         micro_yaw = math.sin(self.micro_t * 0.3) * 0.4 + math.sin(self.micro_t * 0.7) * 0.2
         micro_pitch = math.sin(self.micro_t * 0.4) * 0.25 + math.cos(self.micro_t * 0.55) * 0.15
         eff_yaw = self.yaw + micro_yaw
         eff_pitch = self.pitch + micro_pitch
-
-        breath_y = math.sin(self.breath_t * 0.8) * 0.3
+        breath = math.sin(self.breath_t * 0.8) * 0.3
 
         src = self.original.copy()
-        src = self._apply_expressions(src)
+        if self.blink > 0.1:
+            self._apply_blink(src, self.blink)
+        if self.smile > 0.1:
+            self._apply_smile(src, self.smile)
+        if self.mouth_open > 0.1:
+            self._apply_mouth_open(src, self.mouth_open)
 
-        padded = self.padded_source.copy()
-        p = self.pad
-        padded[p:p + self.img_h, p:p + self.img_w] = src
+        yaw_rad = math.radians(eff_yaw)
+        pitch_rad = math.radians(eff_pitch + breath)
+        roll_rad = math.radians(self.roll)
 
-        H = self._get_head_pose_transform(eff_yaw, eff_pitch + breath_y, self.roll)
-        warped = cv2.warpPerspective(
-            padded, H, (self.padded_w, self.padded_h),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE
-        )
+        depth = self.depth_map
+        parallax_strength = self.face_w * 0.6
 
-        if abs(eff_yaw) > 2:
-            shadow = np.ones_like(warped, dtype=np.float32)
-            shadow_strength = min(0.25, abs(eff_yaw) / 60)
-            cx = self.padded_w // 2
-            for x in range(self.padded_w):
-                if eff_yaw > 0 and x < cx:
-                    factor = 1.0 - shadow_strength * (1.0 - x / cx)
-                elif eff_yaw < 0 and x > cx:
-                    factor = 1.0 - shadow_strength * ((x - cx) / (self.padded_w - cx))
-                else:
-                    factor = 1.0
-                shadow[:, x, :] = factor
-            warped = (warped.astype(float) * shadow).astype(np.uint8)
+        dx_parallax = depth * math.sin(yaw_rad) * parallax_strength
+        dy_parallax = depth * math.sin(pitch_rad) * parallax_strength * 0.8
 
-        scale = min(CAM_WIDTH / self.img_w, CAM_HEIGHT / self.img_h) * 0.82 * self.zoom
-        crop_w = int(self.img_w * 1.3)
-        crop_h = int(self.img_h * 1.3)
+        foreshorten_x = 1.0 + self.norm_x * math.sin(yaw_rad) * 0.25
+        foreshorten_y = 1.0 + self.norm_y * math.sin(pitch_rad) * 0.2
 
-        cx_int = int(self.padded_cx)
-        cy_int = int(self.padded_cy)
-        x1 = max(0, cx_int - crop_w // 2)
-        y1 = max(0, cy_int - crop_h // 2)
-        x2 = min(self.padded_w, x1 + crop_w)
-        y2 = min(self.padded_h, y1 + crop_h)
+        map_x = self.face_cx + (self.grid_x - self.face_cx) * foreshorten_x - dx_parallax
+        map_y = self.face_cy + (self.grid_y - self.face_cy) * foreshorten_y - dy_parallax
 
-        cropped = warped[y1:y2, x1:x2]
+        if abs(self.roll) > 0.5:
+            cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+            rx = (map_x - self.face_cx) * cos_r + (map_y - self.face_cy) * sin_r + self.face_cx
+            ry = -(map_x - self.face_cx) * sin_r + (map_y - self.face_cy) * cos_r + self.face_cy
+            map_x, map_y = rx, ry
+
+        head_shift_x = math.sin(yaw_rad) * self.face_w * 0.08
+        head_shift_y = math.sin(pitch_rad) * self.face_h * 0.06
+        map_x = map_x - head_shift_x
+        map_y = map_y - head_shift_y
+
+        warped = cv2.remap(src, map_x, map_y, cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+        if abs(eff_yaw) > 1:
+            shadow_strength = min(0.35, abs(eff_yaw) / 50)
+            shadow = np.ones(warped.shape[:2], dtype=np.float32)
+            if eff_yaw > 0:
+                shadow = 1.0 - shadow_strength * np.maximum(0, -self.norm_x) ** 0.7
+            else:
+                shadow = 1.0 - shadow_strength * np.maximum(0, self.norm_x) ** 0.7
+            warped = (warped * shadow[:, :, np.newaxis]).astype(np.uint8)
+
+        if abs(eff_pitch) > 1:
+            shadow_p = min(0.2, abs(eff_pitch) / 60)
+            shadow_v = np.ones(warped.shape[:2], dtype=np.float32)
+            if eff_pitch > 0:
+                shadow_v = 1.0 - shadow_p * np.maximum(0, -self.norm_y) ** 0.7
+            else:
+                shadow_v = 1.0 - shadow_p * np.maximum(0, self.norm_y) ** 0.7
+            warped = (warped * shadow_v[:, :, np.newaxis]).astype(np.uint8)
 
         frame = np.full((CAM_HEIGHT, CAM_WIDTH, 3), self.bg_color.reshape(1, 1, 3), dtype=np.uint8)
+        scale = min(CAM_WIDTH / self.img_w, CAM_HEIGHT / self.img_h) * 0.85 * self.zoom
+        scaled = cv2.resize(warped, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        sh, sw = scaled.shape[:2]
+        ox = (CAM_WIDTH - sw) // 2
+        oy = (CAM_HEIGHT - sh) // 2
 
-        if cropped.size > 0:
-            scaled = cv2.resize(cropped, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-            sh, sw = scaled.shape[:2]
+        src_x1 = max(0, -ox)
+        src_y1 = max(0, -oy)
+        dst_x1 = max(0, ox)
+        dst_y1 = max(0, oy)
+        copy_w = min(sw - src_x1, CAM_WIDTH - dst_x1)
+        copy_h = min(sh - src_y1, CAM_HEIGHT - dst_y1)
 
-            ox = (CAM_WIDTH - sw) // 2
-            oy = (CAM_HEIGHT - sh) // 2
-
-            src_x1 = max(0, -ox)
-            src_y1 = max(0, -oy)
-            dst_x1 = max(0, ox)
-            dst_y1 = max(0, oy)
-            copy_w = min(sw - src_x1, CAM_WIDTH - dst_x1)
-            copy_h = min(sh - src_y1, CAM_HEIGHT - dst_y1)
-
-            if copy_w > 0 and copy_h > 0:
-                frame[dst_y1:dst_y1 + copy_h, dst_x1:dst_x1 + copy_w] = \
-                    scaled[src_y1:src_y1 + copy_h, src_x1:src_x1 + copy_w]
+        if copy_w > 0 and copy_h > 0:
+            frame[dst_y1:dst_y1 + copy_h, dst_x1:dst_x1 + copy_w] = \
+                scaled[src_y1:src_y1 + copy_h, src_x1:src_x1 + copy_w]
 
         frame = cv2.bilateralFilter(frame, 5, 40, 40)
-
         return frame
 
 
@@ -560,7 +487,7 @@ class FaceCam3DApp:
 
     def _init_animator(self, face_image):
         print("Setting up face animation...")
-        self.animator = PerspectiveFaceAnimator(face_image, self.face_app)
+        self.animator = DepthFaceAnimator(face_image, self.face_app)
 
     def _init_virtual_cam(self):
         if not self.use_virtual_cam:
