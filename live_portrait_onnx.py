@@ -40,6 +40,7 @@ MODEL_FILES = {
     "stitching_lip.onnx": f"{HF_BASE}/stitching_lip.onnx",
     "retinaface_det_static.onnx": f"{HF_BASE}/retinaface_det_static.onnx",
     "face_2dpose_106_static.onnx": f"{HF_BASE}/face_2dpose_106_static.onnx",
+    "grid_sample_3d_plugin.dll": f"{HF_BASE}/grid_sample_3d_plugin.dll",
 }
 
 MASK_CROP = None
@@ -205,7 +206,23 @@ class LivePortraitEngine:
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
+        plugin_dll = os.path.join(MODELS_DIR, "grid_sample_3d_plugin.dll")
+        if os.path.exists(plugin_dll):
+            try:
+                import ctypes
+                ctypes.CDLL(plugin_dll, mode=0, winmode=0)
+                print(f"  Loaded GridSample3D plugin")
+            except Exception as e:
+                print(f"  Warning: Could not load plugin: {e}")
+            try:
+                opts.register_custom_ops_library(plugin_dll)
+                print(f"  Registered custom ops with ONNX Runtime")
+            except Exception as e:
+                print(f"  Warning: Could not register custom ops: {e}")
+
         for name in MODEL_FILES:
+            if name.endswith(".dll"):
+                continue
             path = os.path.join(MODELS_DIR, name)
             short = name.replace(".onnx", "")
             print(f"  Loading {short}...")
