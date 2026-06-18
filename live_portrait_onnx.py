@@ -444,6 +444,52 @@ class LivePortraitEngine:
 
         return out_img
 
+    def animate_keyboard(self, pitch_delta=0, yaw_delta=0, roll_delta=0, exp_scale=1.0, blink=0, smile=0, mouth=0):
+        """Animate source face using keyboard-controlled motion parameters"""
+        if self.src_info is None:
+            return None
+
+        src = self.src_info
+        pitch_new = src["pitch"] + pitch_delta
+        yaw_new = src["yaw"] + yaw_delta
+        roll_new = src["roll"] + roll_delta
+
+        R_new = get_rotation_matrix(pitch_new, yaw_new, roll_new)
+
+        exp_new = src["exp"].copy() * exp_scale
+        num_kp = src["num_kp"]
+        if blink > 0 and num_kp >= 21:
+            exp_new[0, 11, 1] -= blink * 0.15
+            exp_new[0, 13, 1] -= blink * 0.15
+        if smile > 0 and num_kp >= 21:
+            exp_new[0, 14, 0] += smile * 0.08
+            exp_new[0, 17, 0] -= smile * 0.08
+            exp_new[0, 14, 1] -= smile * 0.03
+            exp_new[0, 17, 1] -= smile * 0.03
+        if mouth > 0 and num_kp >= 21:
+            exp_new[0, 19, 1] += mouth * 0.12
+            exp_new[0, 20, 1] -= mouth * 0.05
+
+        x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + exp_new) + src["t"][:, None, :]
+
+        feat_stitch = np.concatenate([
+            src["x_s"].reshape(1, -1),
+            x_d_new.reshape(1, -1)
+        ], axis=1).astype(np.float32)
+        delta = self._run_model("stitching", feat_stitch)[0]
+        x_d_new = x_d_new + delta[..., :3 * num_kp].reshape(1, num_kp, 3)
+        x_d_new[..., :2] += delta[..., 3 * num_kp:3 * num_kp + 2].reshape(1, 1, 2)
+
+        out = self._run_model(
+            "warping_spade-fix",
+            src["f_s"],
+            x_d_new.astype(np.float32),
+            src["x_s"].astype(np.float32)
+        )[0]
+
+        out_img = np.clip(out[0].transpose(1, 2, 0), 0, 1) * 255
+        return out_img.astype(np.uint8)
+
 
 def main():
     print("=" * 50)
@@ -502,21 +548,6 @@ def main():
         input("Press Enter to exit...")
         return
 
-    print("\nOpening webcam...")
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("ERROR: Could not open webcam!")
-        input("Press Enter to exit...")
-        return
-
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
     vcam = None
     if HAS_VCAM:
         try:
@@ -526,69 +557,74 @@ def main():
             print(f"Virtual camera not available: {e}")
             print("Install OBS Studio for virtual camera output.")
 
-    print("\n--- LIVE ---")
+    print("\n--- KEYBOARD MODE (no webcam needed) ---")
     print("Controls:")
-    print("  G = New AI face")
-    print("  L = Load photo")
-    print("  R = Reset driving pose")
-    print("  ESC = Quit")
+    print("  A/D  = Turn head left/right")
+    print("  W/S  = Look up/down")
+    print("  Q/E  = Tilt head")
+    print("  B    = Blink")
+    print("  N    = Smile")
+    print("  M    = Open mouth")
+    print("  R    = Reset pose")
+    print("  G    = New AI face")
+    print("  L    = Load photo")
+    print("  ESC  = Quit")
     print()
 
-    d0_info = None
+    pitch, yaw, roll = 0.0, 0.0, 0.0
+    blink_val, smile_val, mouth_val = 0.0, 0.0, 0.0
+    speed = 2.0
+    smooth = OneEuroFilter(1.0, 0.5)
+
+    print("Rendering initial frame...")
+    out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
+    if out_img is not None:
+        cv2.imshow("AI Face Cam", cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR))
+    else:
+        print("Warning: initial render returned None")
+
     frame_count = 0
     fps_time = time.time()
+    needs_render = True
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            continue
+        key = cv2.waitKey(30) & 0xFF
 
-        frame = cv2.flip(frame, 1)
-
-        if d0_info is None:
-            result = engine.animate_frame(frame)
-            if result is not None and not isinstance(result, np.ndarray):
-                d0_info = result
-                print("Driving pose captured! Animation starting...")
-                continue
-            cv2.putText(frame, "Detecting face...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.imshow("AI Face Cam", frame)
-        else:
-            out_img = engine.animate_frame(frame, d0_info)
-            if out_img is not None:
-                display = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR) if out_img.shape[2] == 3 else out_img
-
-                frame_count += 1
-                elapsed = time.time() - fps_time
-                if elapsed > 1.0:
-                    fps = frame_count / elapsed
-                    frame_count = 0
-                    fps_time = time.time()
-                    cv2.setWindowTitle("AI Face Cam", f"AI Face Cam - {fps:.1f} FPS")
-
-                cv2.imshow("AI Face Cam", display)
-
-                if vcam is not None:
-                    try:
-                        vcam_frame = cv2.resize(out_img, (512, 512))
-                        vcam.send(vcam_frame)
-                    except:
-                        pass
-            else:
-                cv2.putText(frame, "Face lost - look at camera", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.imshow("AI Face Cam", frame)
-
-        key = cv2.waitKey(1) & 0xFF
         if key == 27:
             break
+
+        moved = False
+        if key == ord('a') or key == ord('A'):
+            yaw -= speed; moved = True
+        elif key == ord('d') or key == ord('D'):
+            yaw += speed; moved = True
+        elif key == ord('w') or key == ord('W'):
+            pitch -= speed; moved = True
+        elif key == ord('s') or key == ord('S'):
+            pitch += speed; moved = True
+        elif key == ord('q') or key == ord('Q'):
+            roll -= speed; moved = True
+        elif key == ord('e') or key == ord('E'):
+            roll += speed; moved = True
+        elif key == ord('b') or key == ord('B'):
+            blink_val = 1.0 if blink_val < 0.5 else 0.0; moved = True
+        elif key == ord('n') or key == ord('N'):
+            smile_val = min(1.0, smile_val + 0.3) if smile_val < 0.9 else 0.0; moved = True
+        elif key == ord('m') or key == ord('M'):
+            mouth_val = min(1.0, mouth_val + 0.3) if mouth_val < 0.9 else 0.0; moved = True
+        elif key == ord('r') or key == ord('R'):
+            pitch, yaw, roll = 0.0, 0.0, 0.0
+            blink_val, smile_val, mouth_val = 0.0, 0.0, 0.0
+            moved = True
+            print("Pose reset!")
         elif key == ord('g') or key == ord('G'):
             path = generate_ai_face()
             if path:
                 img = cv2.imread(path)
                 if img is not None:
                     engine.prepare_source(img)
-                    d0_info = None
+                    pitch, yaw, roll = 0.0, 0.0, 0.0
+                    moved = True
         elif key == ord('l') or key == ord('L'):
             try:
                 import tkinter as tk
@@ -601,14 +637,40 @@ def main():
                     img = cv2.imread(path)
                     if img is not None:
                         engine.prepare_source(img)
-                        d0_info = None
+                        pitch, yaw, roll = 0.0, 0.0, 0.0
+                        moved = True
             except:
                 pass
-        elif key == ord('r') or key == ord('R'):
-            d0_info = None
-            print("Driving pose reset!")
 
-    cap.release()
+        yaw = np.clip(yaw, -30, 30)
+        pitch = np.clip(pitch, -25, 25)
+        roll = np.clip(roll, -20, 20)
+
+        if moved or needs_render:
+            needs_render = False
+            out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
+            if out_img is not None:
+                display = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+
+                frame_count += 1
+                elapsed = time.time() - fps_time
+                if elapsed > 1.0:
+                    fps = frame_count / elapsed
+                    frame_count = 0
+                    fps_time = time.time()
+
+                info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f}"
+                cv2.putText(display, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                cv2.imshow("AI Face Cam", display)
+
+                if vcam is not None:
+                    try:
+                        vcam_frame = cv2.resize(out_img, (512, 512))
+                        vcam.send(vcam_frame)
+                    except:
+                        pass
+
     if vcam:
         vcam.close()
     cv2.destroyAllWindows()
