@@ -1,4 +1,4 @@
-name: Build Windows Exe
+name: Build AI Face Cam 3D
 
 on:
   push:
@@ -21,16 +21,50 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy pyinstaller
+          pip install opencv-python numpy scipy insightface onnxruntime pyvirtualcam pyinstaller
+
+      - name: Download face models
+        run: |
+          python download_models_minimal.py
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCam --icon NONE face_cam.py
+          pyinstaller --onefile --name AIFaceCam3D --console --add-data "models;models" --collect-all insightface --collect-all onnxruntime --hidden-import scipy.spatial --hidden-import pyvirtualcam face_cam_3d.py
+
+      - name: Verify exe exists
+        run: |
+          dir dist\
+          echo "Build complete!"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: AI Face Cam v1.0 Build ${{ github.run_number }}
-          files: dist/AIFaceCam.exe
+          tag_name: v2.0.${{ github.run_number }}
+          name: AI Face Cam 3D v2.0 Build ${{ github.run_number }}
+          body: |
+            ## AI Face Cam 3D - Standalone Windows App
+
+            No Python needed - just download and run!
+
+            ### How to use:
+            1. Download AIFaceCam3D.exe below
+            2. Double-click to run (or drag a face photo onto the exe)
+            3. Select a face photo when prompted
+            4. Use keyboard to animate the face
+
+            ### Controls:
+            - A/D - Turn head left/right
+            - W/S - Look up/down
+            - Q/E - Tilt head
+            - B - Blink
+            - N - Smile
+            - M - Open mouth
+            - +/- - Zoom
+            - R - Reset
+            - ESC - Quit
+
+            ### Virtual Webcam:
+            Install OBS Studio for virtual camera output.
+            Without OBS, it runs in preview-only mode.
+          files: dist/AIFaceCam3D.exe
           make_latest: true
