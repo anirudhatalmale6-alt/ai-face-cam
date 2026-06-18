@@ -23,9 +23,25 @@ jobs:
         run: |
           pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
+      - name: Get ORT include path
+        id: ortpath
+        shell: pwsh
+        run: |
+          $ortInclude = python -c "import onnxruntime; import os; print(os.path.join(os.path.dirname(onnxruntime.__file__), 'capi', 'include'))"
+          echo "ORT_INCLUDE=$ortInclude" >> $env:GITHUB_OUTPUT
+          echo "ORT include: $ortInclude"
+          dir $ortInclude
+
+      - name: Compile GridSample3D custom op DLL
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cl /LD /O2 /I "${{ steps.ortpath.outputs.ORT_INCLUDE }}" grid_sample_3d_ort.c /Fe:grid_sample_3d_ort.dll /link /DEF:NUL
+          dir grid_sample_3d_ort.dll
+
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam live_portrait_onnx.py
+          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam --add-data "grid_sample_3d_ort.dll;." live_portrait_onnx.py
 
       - name: Verify exe exists
         run: |
