@@ -26,7 +26,9 @@ jobs:
       - name: Download ORT C API headers
         run: |
           mkdir ort_include
-          $base = "https://raw.githubusercontent.com/microsoft/onnxruntime/main/include/onnxruntime/core/session"
+          $ortVer = (python -c "import onnxruntime; print(onnxruntime.__version__)").Trim()
+          echo "ORT version: $ortVer"
+          $base = "https://raw.githubusercontent.com/microsoft/onnxruntime/v$ortVer/include/onnxruntime/core/session"
           $headers = @("onnxruntime_c_api.h","onnxruntime_error_code.h","onnxruntime_float16.h","onnxruntime_session_options_config_keys.h","onnxruntime_run_options_config_keys.h","onnxruntime_ep_c_api.h","onnxruntime_ep_device_ep_metadata_keys.h","onnxruntime_env_config_keys.h","onnxruntime_cxx_api.h","onnxruntime_cxx_inline.h","onnxruntime_lite_custom_op.h","environment.h","experimental_onnxruntime_cxx_api.h","experimental_onnxruntime_cxx_inline.h","onnxruntime_experimental_c_api.h")
           foreach ($h in $headers) {
             curl -sL -o "ort_include/$h" "$base/$h"
