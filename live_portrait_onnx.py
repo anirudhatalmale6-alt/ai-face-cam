@@ -245,67 +245,43 @@ class LivePortraitEngine:
                 feed[inp.name] = data.astype(np.float32)
         return sess.run(None, feed)
 
+    def _init_face_detector(self):
+        """Initialize OpenCV DNN face detector"""
+        if not hasattr(self, '_face_det'):
+            proto = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+            self._face_cascade = cv2.CascadeClassifier(proto)
+            try:
+                self._face_det = cv2.FaceDetectorYN.create(
+                    "", "", (300, 300), 0.5, 0.3, 5000
+                )
+                self._use_dnn = False
+            except:
+                self._use_dnn = False
+
     def detect_face(self, img_bgr):
         """Detect face and return 106 landmarks"""
+        self._init_face_detector()
         h, w = img_bgr.shape[:2]
-        det_input = cv2.resize(img_bgr, (512, 512))
-        det_input = cv2.cvtColor(det_input, cv2.COLOR_BGR2RGB)
-        det_input = (det_input.astype(np.float32) - 127.5) / 128.0
-        det_input = det_input.transpose(2, 0, 1)[None]
 
-        outputs = self._run_model("retinaface_det_static", det_input)
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        faces = self._face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
 
-        scores_list = []
-        bboxes_list = []
-        for i in range(0, 9, 3):
-            stride = [8, 16, 32][i // 3]
-            score = outputs[i]
-            bbox = outputs[i + 1]
-            fh, fw = 512 // stride, 512 // stride
+        if len(faces) == 0:
+            faces = self._face_cascade.detectMultiScale(gray, 1.05, 3, minSize=(30, 30))
 
-            score = 1 / (1 + np.exp(-score))
-            score = score.reshape(-1)
-
-            anchors_y, anchors_x = np.mgrid[:fh, :fw]
-            anchors = np.stack([anchors_x, anchors_y], axis=-1).reshape(-1, 2).astype(np.float32)
-            anchors = anchors * stride
-
-            for a_idx in range(2):
-                s = score[a_idx * fh * fw:(a_idx + 1) * fh * fw]
-                b = bbox[0, a_idx * 4:(a_idx + 1) * 4].reshape(4, fh, fw).transpose(1, 2, 0).reshape(-1, 4)
-
-                mask = s > 0.5
-                if not mask.any():
-                    continue
-
-                s_filt = s[mask]
-                b_filt = b[mask]
-                a_filt = anchors[mask]
-
-                x1 = (a_filt[:, 0] - b_filt[:, 0] * stride) * w / 512
-                y1 = (a_filt[:, 1] - b_filt[:, 1] * stride) * h / 512
-                x2 = (a_filt[:, 0] + b_filt[:, 2] * stride) * w / 512
-                y2 = (a_filt[:, 1] + b_filt[:, 3] * stride) * h / 512
-
-                scores_list.append(s_filt)
-                bboxes_list.append(np.stack([x1, y1, x2, y2], axis=1))
-
-        if not scores_list:
+        if len(faces) == 0:
             return None
 
-        all_scores = np.concatenate(scores_list)
-        all_bboxes = np.concatenate(bboxes_list)
+        areas = [fw * fh for (fx, fy, fw, fh) in faces]
+        best = np.argmax(areas)
+        fx, fy, fw, fh = faces[best]
 
-        best_idx = np.argmax(all_scores)
-        bbox = all_bboxes[best_idx]
-
-        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-        bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        scale = max(bw, bh) * 1.5
-        x1 = max(0, int(cx - scale / 2))
-        y1 = max(0, int(cy - scale / 2))
-        x2 = min(w, int(cx + scale / 2))
-        y2 = min(h, int(cy + scale / 2))
+        cx, cy = fx + fw // 2, fy + fh // 2
+        size = int(max(fw, fh) * 1.5)
+        x1 = max(0, cx - size // 2)
+        y1 = max(0, cy - size // 2)
+        x2 = min(w, cx + size // 2)
+        y2 = min(h, cy + size // 2)
 
         face_crop = img_bgr[y1:y2, x1:x2]
         if face_crop.size == 0:

@@ -40,9 +40,15 @@ jobs:
           cl /LD /O2 /I ort_include grid_sample_3d_ort.c /Fe:grid_sample_3d_ort.dll
           dir grid_sample_3d_ort.dll
 
+      - name: Get OpenCV data path
+        id: cv2path
+        run: |
+          $cv2data = python -c "import cv2; print(cv2.data.haarcascades)"
+          echo "CV2_DATA=$cv2data" >> $env:GITHUB_OUTPUT
+
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam --add-data "grid_sample_3d_ort.dll;." live_portrait_onnx.py
+          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam --add-data "grid_sample_3d_ort.dll;." --add-data "${{ steps.cv2path.outputs.CV2_DATA }};cv2/data" live_portrait_onnx.py
 
       - name: Verify exe exists
         run: |
