@@ -21,20 +21,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
+          pip install opencv-python numpy "onnxruntime==1.26.0" pyvirtualcam pyinstaller
 
       - name: Download ORT SDK headers
         shell: pwsh
         run: |
-          $ortVer = (python -c "import onnxruntime; print(onnxruntime.__version__)").Trim()
-          echo "ORT version: $ortVer"
-          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$ortVer/onnxruntime-win-x64-$ortVer.zip"
-          echo "Downloading: $url"
-          curl -sL -o ort_sdk.zip $url
-          7z x ort_sdk.zip -oort_sdk -y
-          $incDir = Get-ChildItem -Path ort_sdk -Recurse -Directory -Filter "include" | Select-Object -First 1
-          echo "Include dir: $($incDir.FullName)"
-          Copy-Item -Path "$($incDir.FullName)\*" -Destination "ort_include" -Recurse -Force
+          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-win-x64-1.26.0.zip" -OutFile "ort_sdk.zip"
+          Expand-Archive -Path "ort_sdk.zip" -DestinationPath "ort_sdk" -Force
+          Copy-Item -Path "ort_sdk\onnxruntime-win-x64-1.26.0\include\*" -Destination "ort_include" -Recurse -Force
           dir ort_include
 
       - name: Setup MSVC
