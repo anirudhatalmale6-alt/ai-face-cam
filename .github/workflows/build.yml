@@ -23,18 +23,19 @@ jobs:
         run: |
           pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
-      - name: Download ORT C API headers
+      - name: Download ORT SDK headers
+        shell: pwsh
         run: |
-          mkdir ort_include
           $ortVer = (python -c "import onnxruntime; print(onnxruntime.__version__)").Trim()
           echo "ORT version: $ortVer"
-          $base = "https://raw.githubusercontent.com/microsoft/onnxruntime/v$ortVer/include/onnxruntime/core/session"
-          $headers = @("onnxruntime_c_api.h","onnxruntime_error_code.h","onnxruntime_float16.h","onnxruntime_session_options_config_keys.h","onnxruntime_run_options_config_keys.h","onnxruntime_ep_c_api.h","onnxruntime_ep_device_ep_metadata_keys.h","onnxruntime_env_config_keys.h","onnxruntime_cxx_api.h","onnxruntime_cxx_inline.h","onnxruntime_lite_custom_op.h","environment.h","experimental_onnxruntime_cxx_api.h","experimental_onnxruntime_cxx_inline.h","onnxruntime_experimental_c_api.h")
-          foreach ($h in $headers) {
-            curl -sL -o "ort_include/$h" "$base/$h"
-          }
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$ortVer/onnxruntime-win-x64-$ortVer.zip"
+          echo "Downloading: $url"
+          curl -sL -o ort_sdk.zip $url
+          7z x ort_sdk.zip -oort_sdk -y
+          $incDir = Get-ChildItem -Path ort_sdk -Recurse -Directory -Filter "include" | Select-Object -First 1
+          echo "Include dir: $($incDir.FullName)"
+          Copy-Item -Path "$($incDir.FullName)\*" -Destination "ort_include" -Recurse -Force
           dir ort_include
-        shell: pwsh
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
