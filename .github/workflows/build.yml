@@ -1,4 +1,4 @@
-name: Build AI Face Cam 3D
+name: Build AI Face Cam LivePortrait
 
 on:
   push:
@@ -21,21 +21,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy scipy insightface onnxruntime pyvirtualcam pyinstaller
-
-      - name: Download face models
-        run: |
-          python download_models_minimal.py
-
-      - name: Get OpenCV data path
-        id: cv2path
-        run: |
-          $cv2data = python -c "import cv2; print(cv2.data.haarcascades)"
-          echo "CV2_DATA=$cv2data" >> $env:GITHUB_OUTPUT
+          pip install opencv-python numpy onnxruntime pyvirtualcam pyinstaller
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCam3D --console --add-data "models;models" --add-data "${{ steps.cv2path.outputs.CV2_DATA }};cv2/data" --collect-all insightface --collect-all onnxruntime --hidden-import scipy.spatial --hidden-import pyvirtualcam face_cam_3d.py
+          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam live_portrait_onnx.py
 
       - name: Verify exe exists
         run: |
@@ -45,32 +35,31 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.${{ github.run_number }}
-          name: AI Face Cam 3D v2.0 Build ${{ github.run_number }}
+          tag_name: v3.0.${{ github.run_number }}
+          name: AI Face Cam LivePortrait v3.0 Build ${{ github.run_number }}
           body: |
-            ## AI Face Cam 3D - Standalone Windows App
+            ## AI Face Cam LivePortrait - Standalone Windows App
 
-            No Python needed - just download and run!
+            Real-time face animation using LivePortrait AI. No Python needed!
+
+            ### First run:
+            - Downloads AI models automatically (~600MB, one time only)
+            - Needs internet for first run, works offline after that
 
             ### How to use:
-            1. Download AIFaceCam3D.exe below
-            2. Double-click to run (or drag a face photo onto the exe)
-            3. Select a face photo when prompted
-            4. Use keyboard to animate the face
+            1. Download AIFaceCamLive.exe below
+            2. Double-click to run
+            3. Choose G (generate AI face) or L (load your photo)
+            4. Look at your webcam - the AI face follows your movements!
 
             ### Controls:
-            - A/D - Turn head left/right
-            - W/S - Look up/down
-            - Q/E - Tilt head
-            - B - Blink
-            - N - Smile
-            - M - Open mouth
-            - +/- - Zoom
-            - R - Reset
-            - ESC - Quit
+            - G = Generate new random AI face
+            - L = Load a face photo
+            - R = Reset pose tracking
+            - ESC = Quit
 
-            ### Virtual Webcam:
+            ### Virtual Webcam (for KYC):
             Install OBS Studio for virtual camera output.
-            Without OBS, it runs in preview-only mode.
-          files: dist/AIFaceCam3D.exe
+            The animated face appears as a webcam in any app.
+          files: dist/AIFaceCamLive.exe
           make_latest: true

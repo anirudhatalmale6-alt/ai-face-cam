@@ -1,0 +1,627 @@
+"""
+AI Face Cam - LivePortrait ONNX
+Real-time face animation using LivePortrait ONNX models.
+No PyTorch needed - uses onnxruntime + numpy only.
+"""
+import os
+import sys
+import time
+import urllib.request
+import numpy as np
+import cv2
+
+try:
+    import onnxruntime as ort
+except ImportError:
+    print("ERROR: onnxruntime not found. Install with: pip install onnxruntime")
+    sys.exit(1)
+
+try:
+    import pyvirtualcam
+    HAS_VCAM = True
+except ImportError:
+    HAS_VCAM = False
+
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODELS_DIR = os.path.join(os.path.expanduser("~"), ".aifacecam", "liveportrait_onnx")
+FACES_DIR = os.path.join(os.path.expanduser("~"), ".aifacecam", "faces")
+
+HF_BASE = "https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx"
+MODEL_FILES = {
+    "appearance_feature_extractor.onnx": f"{HF_BASE}/appearance_feature_extractor.onnx",
+    "motion_extractor.onnx": f"{HF_BASE}/motion_extractor.onnx",
+    "warping_spade-fix.onnx": f"{HF_BASE}/warping_spade-fix.onnx",
+    "stitching.onnx": f"{HF_BASE}/stitching.onnx",
+    "stitching_eye.onnx": f"{HF_BASE}/stitching_eye.onnx",
+    "stitching_lip.onnx": f"{HF_BASE}/stitching_lip.onnx",
+    "retinaface_det_static.onnx": f"{HF_BASE}/retinaface_det_static.onnx",
+    "face_2dpose_106_static.onnx": f"{HF_BASE}/face_2dpose_106_static.onnx",
+}
+
+MASK_CROP = None
+
+
+def download_model(name, url, dest_dir):
+    dest = os.path.join(dest_dir, name)
+    if os.path.exists(dest):
+        return dest
+    os.makedirs(dest_dir, exist_ok=True)
+    print(f"Downloading {name}...")
+    tmp = dest + ".tmp"
+
+    def progress(count, block_size, total_size):
+        if total_size > 0:
+            mb = count * block_size / (1024 * 1024)
+            total_mb = total_size / (1024 * 1024)
+            pct = min(100, int(count * block_size * 100 / total_size))
+            sys.stdout.write(f"\r  {pct}% ({mb:.1f}/{total_mb:.1f} MB)")
+            sys.stdout.flush()
+
+    try:
+        urllib.request.urlretrieve(url, tmp, reporthook=progress)
+        os.rename(tmp, dest)
+        print(f"\n  Done: {name}")
+        return dest
+    except Exception as e:
+        print(f"\n  Failed: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return None
+
+
+def download_all_models():
+    print("Checking AI models...")
+    for name, url in MODEL_FILES.items():
+        path = download_model(name, url, MODELS_DIR)
+        if path is None:
+            print(f"ERROR: Could not download {name}")
+            print("Check your internet connection and try again.")
+            return False
+    print("All models ready!\n")
+    return True
+
+
+def generate_ai_face():
+    """Download a random AI-generated face"""
+    os.makedirs(FACES_DIR, exist_ok=True)
+    print("Generating AI face from thispersondoesnotexist.com...")
+    try:
+        req = urllib.request.Request(
+            "https://thispersondoesnotexist.com",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        data = urllib.request.urlopen(req).read()
+        face_path = os.path.join(FACES_DIR, f"face_{int(time.time())}.jpg")
+        with open(face_path, "wb") as f:
+            f.write(data)
+        print(f"  Saved: {face_path}")
+        return face_path
+    except Exception as e:
+        print(f"  Failed: {e}")
+        return None
+
+
+def headpose_pred_to_degree(pred):
+    if pred.ndim > 1 and pred.shape[1] == 66:
+        idx_array = np.arange(0, 66, dtype=np.float32)
+        pred = np.exp(pred - np.max(pred, axis=1, keepdims=True))
+        pred = pred / np.sum(pred, axis=1, keepdims=True)
+        degree = np.sum(pred * idx_array, axis=1) * 3 - 97.5
+        return degree
+    return pred.flatten()
+
+
+def get_rotation_matrix(pitch_, yaw_, roll_):
+    PI = np.pi
+    pitch = pitch_ / 180 * PI
+    yaw = yaw_ / 180 * PI
+    roll = roll_ / 180 * PI
+
+    if np.isscalar(pitch):
+        pitch = np.array([[pitch]])
+        yaw = np.array([[yaw]])
+        roll = np.array([[roll]])
+    elif pitch.ndim == 1:
+        pitch = pitch[:, None]
+        yaw = yaw[:, None]
+        roll = roll[:, None]
+
+    bs = pitch.shape[0]
+    ones = np.ones([bs, 1])
+    zeros = np.zeros([bs, 1])
+
+    rot_x = np.concatenate([
+        ones, zeros, zeros,
+        zeros, np.cos(pitch), -np.sin(pitch),
+        zeros, np.sin(pitch), np.cos(pitch)
+    ], axis=1).reshape([bs, 3, 3])
+
+    rot_y = np.concatenate([
+        np.cos(yaw), zeros, np.sin(yaw),
+        zeros, ones, zeros,
+        -np.sin(yaw), zeros, np.cos(yaw)
+    ], axis=1).reshape([bs, 3, 3])
+
+    rot_z = np.concatenate([
+        np.cos(roll), -np.sin(roll), zeros,
+        np.sin(roll), np.cos(roll), zeros,
+        zeros, zeros, ones
+    ], axis=1).reshape([bs, 3, 3])
+
+    rot = np.matmul(rot_z, np.matmul(rot_y, rot_x))
+    return np.transpose(rot, (0, 2, 1))
+
+
+def calc_eye_close_ratio(lmk):
+    def dist(a, b):
+        return np.linalg.norm(lmk[:, a] - lmk[:, b], axis=1, keepdims=True)
+    left = dist(6, 18) / (dist(0, 12) + 1e-6)
+    right = dist(30, 42) / (dist(24, 36) + 1e-6)
+    return np.concatenate([left, right], axis=1)
+
+
+def calc_lip_close_ratio(lmk):
+    def dist(a, b):
+        return np.linalg.norm(lmk[:, a] - lmk[:, b], axis=1, keepdims=True)
+    return dist(90, 102) / (dist(48, 66) + 1e-6)
+
+
+class OneEuroFilter:
+    def __init__(self, t_e=1.0, alpha=0.3):
+        self.t_e = t_e
+        self.alpha = alpha
+        self.prev = None
+
+    def __call__(self, x):
+        if self.prev is None:
+            self.prev = x.copy()
+            return x
+        result = self.alpha * x + (1 - self.alpha) * self.prev
+        self.prev = result.copy()
+        return result
+
+
+class LivePortraitEngine:
+    def __init__(self):
+        self.sessions = {}
+        self.src_info = None
+
+    def load_models(self):
+        print("Loading AI models (this may take a moment)...")
+        providers = ort.get_available_providers()
+        use_providers = []
+        if 'CUDAExecutionProvider' in providers:
+            use_providers.append('CUDAExecutionProvider')
+            print("  Using NVIDIA GPU acceleration!")
+        if 'DmlExecutionProvider' in providers:
+            use_providers.append('DmlExecutionProvider')
+            print("  Using DirectML GPU acceleration!")
+        use_providers.append('CPUExecutionProvider')
+
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        for name in MODEL_FILES:
+            path = os.path.join(MODELS_DIR, name)
+            short = name.replace(".onnx", "")
+            print(f"  Loading {short}...")
+            self.sessions[short] = ort.InferenceSession(path, opts, providers=use_providers)
+
+        print("All models loaded!\n")
+
+    def _run_model(self, name, *inputs):
+        sess = self.sessions[name]
+        feed = {}
+        for i, inp in enumerate(sess.get_inputs()):
+            data = inputs[i]
+            if inp.type == 'tensor(float16)':
+                feed[inp.name] = data.astype(np.float16)
+            else:
+                feed[inp.name] = data.astype(np.float32)
+        return sess.run(None, feed)
+
+    def detect_face(self, img_bgr):
+        """Detect face and return 106 landmarks"""
+        h, w = img_bgr.shape[:2]
+        det_input = cv2.resize(img_bgr, (512, 512))
+        det_input = cv2.cvtColor(det_input, cv2.COLOR_BGR2RGB)
+        det_input = (det_input.astype(np.float32) - 127.5) / 128.0
+        det_input = det_input.transpose(2, 0, 1)[None]
+
+        outputs = self._run_model("retinaface_det_static", det_input)
+
+        scores_list = []
+        bboxes_list = []
+        for i in range(0, 9, 3):
+            stride = [8, 16, 32][i // 3]
+            score = outputs[i]
+            bbox = outputs[i + 1]
+            fh, fw = 512 // stride, 512 // stride
+
+            score = 1 / (1 + np.exp(-score))
+            score = score.reshape(-1)
+
+            anchors_y, anchors_x = np.mgrid[:fh, :fw]
+            anchors = np.stack([anchors_x, anchors_y], axis=-1).reshape(-1, 2).astype(np.float32)
+            anchors = anchors * stride
+
+            for a_idx in range(2):
+                s = score[a_idx * fh * fw:(a_idx + 1) * fh * fw]
+                b = bbox[0, a_idx * 4:(a_idx + 1) * 4].reshape(4, fh, fw).transpose(1, 2, 0).reshape(-1, 4)
+
+                mask = s > 0.5
+                if not mask.any():
+                    continue
+
+                s_filt = s[mask]
+                b_filt = b[mask]
+                a_filt = anchors[mask]
+
+                x1 = (a_filt[:, 0] - b_filt[:, 0] * stride) * w / 512
+                y1 = (a_filt[:, 1] - b_filt[:, 1] * stride) * h / 512
+                x2 = (a_filt[:, 0] + b_filt[:, 2] * stride) * w / 512
+                y2 = (a_filt[:, 1] + b_filt[:, 3] * stride) * h / 512
+
+                scores_list.append(s_filt)
+                bboxes_list.append(np.stack([x1, y1, x2, y2], axis=1))
+
+        if not scores_list:
+            return None
+
+        all_scores = np.concatenate(scores_list)
+        all_bboxes = np.concatenate(bboxes_list)
+
+        best_idx = np.argmax(all_scores)
+        bbox = all_bboxes[best_idx]
+
+        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+        bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        scale = max(bw, bh) * 1.5
+        x1 = max(0, int(cx - scale / 2))
+        y1 = max(0, int(cy - scale / 2))
+        x2 = min(w, int(cx + scale / 2))
+        y2 = min(h, int(cy + scale / 2))
+
+        face_crop = img_bgr[y1:y2, x1:x2]
+        if face_crop.size == 0:
+            return None
+
+        face_192 = cv2.resize(face_crop, (192, 192))
+        face_rgb = cv2.cvtColor(face_192, cv2.COLOR_BGR2RGB)
+        lmk_input = face_rgb.astype(np.float32).transpose(2, 0, 1)[None]
+
+        lmk_out = self._run_model("face_2dpose_106_static", lmk_input)
+        lmk = lmk_out[0].reshape(106, 2)
+
+        lmk[:, 0] = lmk[:, 0] / 192 * (x2 - x1) + x1
+        lmk[:, 1] = lmk[:, 1] / 192 * (y2 - y1) + y1
+
+        return lmk
+
+    def crop_face(self, img_rgb, lmk, scale=2.3, target_size=256):
+        """Crop face region centered on landmarks"""
+        cx = np.mean(lmk[:, 0])
+        cy = np.mean(lmk[:, 1])
+        face_w = (np.max(lmk[:, 0]) - np.min(lmk[:, 0])) * scale
+        face_h = (np.max(lmk[:, 1]) - np.min(lmk[:, 1])) * scale
+        size = max(face_w, face_h)
+
+        src_pts = np.float32([
+            [cx - size / 2, cy - size / 2],
+            [cx + size / 2, cy - size / 2],
+            [cx - size / 2, cy + size / 2]
+        ])
+        dst_pts = np.float32([
+            [0, 0],
+            [target_size, 0],
+            [0, target_size]
+        ])
+
+        M = cv2.getAffineTransform(src_pts, dst_pts)
+        M_inv = cv2.getAffineTransform(dst_pts, src_pts)
+        crop = cv2.warpAffine(img_rgb, M, (target_size, target_size), flags=cv2.INTER_LINEAR)
+
+        return crop, M, M_inv
+
+    def prepare_source(self, source_img_bgr):
+        """Process source image - extract features and motion"""
+        print("Processing source face...")
+        img_rgb = cv2.cvtColor(source_img_bgr, cv2.COLOR_BGR2RGB)
+
+        lmk = self.detect_face(source_img_bgr)
+        if lmk is None:
+            print("  No face detected in source image!")
+            return False
+
+        crop_256, M_crop, M_inv = self.crop_face(img_rgb, lmk)
+        crop_input = (crop_256.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
+
+        f_s = self._run_model("appearance_feature_extractor", crop_input)[0]
+        print(f"  Appearance features: {f_s.shape}")
+
+        mot_out = self._run_model("motion_extractor", crop_input)
+        pitch, yaw, roll, t, exp, scale, kp = mot_out
+
+        pitch = headpose_pred_to_degree(pitch)
+        yaw = headpose_pred_to_degree(yaw)
+        roll = headpose_pred_to_degree(roll)
+        kp = kp.reshape(1, -1, 3)
+        exp = exp.reshape(1, -1, 3)
+        num_kp = kp.shape[1]
+
+        R_s = get_rotation_matrix(pitch, yaw, roll)
+        x_s = scale[..., None] * (kp @ R_s + exp) + t[:, None, :]
+
+        mask_crop = np.ones((256, 256, 3), dtype=np.float32)
+        cv2.ellipse(mask_crop, (128, 128), (120, 140), 0, 0, 360, (1, 1, 1), -1)
+        mask_crop = cv2.GaussianBlur(mask_crop, (51, 51), 20)
+
+        h, w = source_img_bgr.shape[:2]
+        crop_512, M_512, M_512_inv = self.crop_face(img_rgb, lmk, target_size=512)
+
+        self.src_info = {
+            "f_s": f_s,
+            "x_s": x_s,
+            "kp": kp,
+            "exp": exp,
+            "scale": scale,
+            "t": t,
+            "R_s": R_s,
+            "pitch": pitch,
+            "yaw": yaw,
+            "roll": roll,
+            "num_kp": num_kp,
+            "crop_256": crop_256,
+            "img_rgb": img_rgb,
+            "M_inv": M_inv,
+            "M_512_inv": M_512_inv,
+            "mask_crop": mask_crop,
+            "orig_shape": (h, w),
+            "lmk": lmk,
+        }
+
+        print(f"  Source ready! Keypoints: {num_kp}, Pose: pitch={pitch[0]:.1f} yaw={yaw[0]:.1f} roll={roll[0]:.1f}")
+        return True
+
+    def animate_frame(self, driving_img_bgr, d0_info=None):
+        """Animate source face using driving frame's motion"""
+        if self.src_info is None:
+            return None
+
+        driving_rgb = cv2.cvtColor(driving_img_bgr, cv2.COLOR_BGR2RGB)
+        lmk_d = self.detect_face(driving_img_bgr)
+        if lmk_d is None:
+            return None
+
+        crop_d, _, _ = self.crop_face(driving_rgb, lmk_d)
+        crop_input = (crop_d.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
+
+        mot_out = self._run_model("motion_extractor", crop_input)
+        pitch_d, yaw_d, roll_d, t_d, exp_d, scale_d, kp_d = mot_out
+        pitch_d = headpose_pred_to_degree(pitch_d)
+        yaw_d = headpose_pred_to_degree(yaw_d)
+        roll_d = headpose_pred_to_degree(roll_d)
+        exp_d = exp_d.reshape(1, -1, 3)
+        R_d = get_rotation_matrix(pitch_d, yaw_d, roll_d)
+
+        info = {
+            "pitch": pitch_d, "yaw": yaw_d, "roll": roll_d,
+            "t": t_d, "exp": exp_d, "scale": scale_d,
+            "R": R_d,
+        }
+
+        if d0_info is None:
+            return info
+
+        src = self.src_info
+        R_new = R_d @ np.linalg.inv(d0_info["R"]) @ src["R_s"]
+        delta_exp = src["exp"] + (exp_d - d0_info["exp"])
+        scale_new = src["scale"] * (scale_d / (d0_info["scale"] + 1e-6))
+        t_new = src["t"] + (t_d - d0_info["t"])
+        t_new[..., 2] = 0
+
+        x_d_new = scale_new[..., None] * (src["kp"] @ R_new + delta_exp) + t_new[:, None, :]
+
+        feat_stitch = np.concatenate([
+            src["x_s"].reshape(1, -1),
+            x_d_new.reshape(1, -1)
+        ], axis=1).astype(np.float32)
+        delta = self._run_model("stitching", feat_stitch)[0]
+        num_kp = src["num_kp"]
+        x_d_new = x_d_new + delta[..., :3 * num_kp].reshape(1, num_kp, 3)
+        x_d_new[..., :2] += delta[..., 3 * num_kp:3 * num_kp + 2].reshape(1, 1, 2)
+
+        out = self._run_model(
+            "warping_spade-fix",
+            src["f_s"],
+            x_d_new.astype(np.float32),
+            src["x_s"].astype(np.float32)
+        )[0]
+
+        out_img = np.clip(out[0].transpose(1, 2, 0), 0, 1) * 255
+        out_img = out_img.astype(np.uint8)
+
+        return out_img
+
+
+def main():
+    print("=" * 50)
+    print("  AI Face Cam - LivePortrait ONNX")
+    print("  Real-time face animation")
+    print("=" * 50)
+    print()
+
+    if not download_all_models():
+        input("Press Enter to exit...")
+        return
+
+    engine = LivePortraitEngine()
+    engine.load_models()
+
+    source_path = None
+    for arg in sys.argv[1:]:
+        if os.path.exists(arg):
+            source_path = arg
+            break
+
+    if source_path is None:
+        print("No source face provided. Options:")
+        print("  G = Generate random AI face")
+        print("  L = Load a photo from file")
+        print()
+        choice = input("Choose (G/L): ").strip().upper()
+        if choice == "L":
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                source_path = filedialog.askopenfilename(
+                    title="Select face photo",
+                    filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp")]
+                )
+                root.destroy()
+            except:
+                source_path = input("Enter path to face photo: ").strip().strip('"')
+        else:
+            source_path = generate_ai_face()
+
+    if not source_path or not os.path.exists(source_path):
+        print("No valid source image!")
+        input("Press Enter to exit...")
+        return
+
+    source_img = cv2.imread(source_path)
+    if source_img is None:
+        print(f"Could not read: {source_path}")
+        input("Press Enter to exit...")
+        return
+
+    if not engine.prepare_source(source_img):
+        input("Press Enter to exit...")
+        return
+
+    print("\nOpening webcam...")
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("ERROR: Could not open webcam!")
+        input("Press Enter to exit...")
+        return
+
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    vcam = None
+    if HAS_VCAM:
+        try:
+            vcam = pyvirtualcam.Camera(width=512, height=512, fps=30, fmt=pyvirtualcam.PixelFormat.BGR)
+            print(f"Virtual camera: {vcam.device}")
+        except Exception as e:
+            print(f"Virtual camera not available: {e}")
+            print("Install OBS Studio for virtual camera output.")
+
+    print("\n--- LIVE ---")
+    print("Controls:")
+    print("  G = New AI face")
+    print("  L = Load photo")
+    print("  R = Reset driving pose")
+    print("  ESC = Quit")
+    print()
+
+    d0_info = None
+    frame_count = 0
+    fps_time = time.time()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        frame = cv2.flip(frame, 1)
+
+        if d0_info is None:
+            result = engine.animate_frame(frame)
+            if result is not None and not isinstance(result, np.ndarray):
+                d0_info = result
+                print("Driving pose captured! Animation starting...")
+                continue
+            cv2.putText(frame, "Detecting face...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow("AI Face Cam", frame)
+        else:
+            out_img = engine.animate_frame(frame, d0_info)
+            if out_img is not None:
+                display = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR) if out_img.shape[2] == 3 else out_img
+
+                frame_count += 1
+                elapsed = time.time() - fps_time
+                if elapsed > 1.0:
+                    fps = frame_count / elapsed
+                    frame_count = 0
+                    fps_time = time.time()
+                    cv2.setWindowTitle("AI Face Cam", f"AI Face Cam - {fps:.1f} FPS")
+
+                cv2.imshow("AI Face Cam", display)
+
+                if vcam is not None:
+                    try:
+                        vcam_frame = cv2.resize(out_img, (512, 512))
+                        vcam.send(vcam_frame)
+                    except:
+                        pass
+            else:
+                cv2.putText(frame, "Face lost - look at camera", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("AI Face Cam", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:
+            break
+        elif key == ord('g') or key == ord('G'):
+            path = generate_ai_face()
+            if path:
+                img = cv2.imread(path)
+                if img is not None:
+                    engine.prepare_source(img)
+                    d0_info = None
+        elif key == ord('l') or key == ord('L'):
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp")])
+                root.destroy()
+                if path:
+                    img = cv2.imread(path)
+                    if img is not None:
+                        engine.prepare_source(img)
+                        d0_info = None
+            except:
+                pass
+        elif key == ord('r') or key == ord('R'):
+            d0_info = None
+            print("Driving pose reset!")
+
+    cap.release()
+    if vcam:
+        vcam.close()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"\nERROR: {e}")
+        traceback.print_exc()
+        input("\nPress Enter to exit...")
