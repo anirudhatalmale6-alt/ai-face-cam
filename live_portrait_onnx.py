@@ -579,84 +579,95 @@ def main():
             print(f"Virtual camera not available: {e}")
             print("Install OBS Studio for virtual camera output.")
 
-    print("\n--- KEYBOARD MODE (no webcam needed) ---")
-    print("Controls:")
-    print("  A/D  = Turn head left/right")
-    print("  W/S  = Look up/down")
-    print("  Q/E  = Tilt head")
-    print("  B    = Blink")
-    print("  N    = Smile")
-    print("  M    = Open mouth")
-    print("  R    = Reset pose")
-    print("  G    = New AI face")
-    print("  L    = Load photo")
-    print("  ESC  = Quit")
-    print()
-
-    pitch, yaw, roll = 0.0, 0.0, 0.0
-    blink_val, smile_val, mouth_val = 0.0, 0.0, 0.0
-    speed = 5.0
-    smooth = OneEuroFilter(1.0, 0.5)
-
     src_crop = engine.src_info["crop_256"]
     preview = cv2.resize(src_crop, (512, 512))
     preview_bgr = cv2.cvtColor(preview, cv2.COLOR_RGB2BGR)
-    cv2.putText(preview_bgr, "Rendering first frame...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
     cv2.imshow("AI Face Cam", preview_bgr)
     cv2.waitKey(1)
 
-    print("Rendering initial frame (this may take 5-15 seconds)...")
-    t0 = time.time()
-    out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
-    render_time = time.time() - t0
-    print(f"  Frame rendered in {render_time:.1f}s")
-    if out_img is not None:
-        cv2.imshow("AI Face Cam", cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR))
-    else:
-        print("Warning: initial render returned None")
+    anim_keyframes = []
+    yaw_seq = []
+    for y in np.linspace(0, -15, 8):
+        yaw_seq.append((0, y, 0, 0, 0, 0))
+    for y in np.linspace(-15, 15, 16):
+        yaw_seq.append((0, y, 0, 0, 0, 0))
+    for y in np.linspace(15, 0, 8):
+        yaw_seq.append((0, y, 0, 0, 0, 0))
+    for p in np.linspace(0, -10, 5):
+        yaw_seq.append((p, 0, 0, 0, 0, 0))
+    for p in np.linspace(-10, 8, 8):
+        yaw_seq.append((p, 0, 0, 0, 0, 0))
+    for p in np.linspace(8, 0, 5):
+        yaw_seq.append((p, 0, 0, 0, 0, 0))
+    yaw_seq.append((0, 0, 0, 1.0, 0, 0))
+    yaw_seq.append((0, 0, 0, 1.0, 0, 0))
+    yaw_seq.append((0, 0, 0, 0, 0, 0))
+    for i in range(4):
+        yaw_seq.append((0, 0, 0, 0, min(1.0, i*0.35), 0))
+    for i in range(4):
+        yaw_seq.append((0, 0, 0, 0, max(0, 1.0 - i*0.35), 0))
+    for y in np.linspace(0, -8, 4):
+        yaw_seq.append((-3, y, 0, 0, 0.5, 0))
+    for y in np.linspace(-8, 8, 8):
+        yaw_seq.append((-3, y, 0, 0, 0.5, 0))
+    for y in np.linspace(8, 0, 4):
+        yaw_seq.append((-3, y, 0, 0, 0.5, 0))
+    yaw_seq.append((0, 0, 0, 0, 0, 0))
+    yaw_seq.append((0, 0, 0, 0, 0, 0))
+    yaw_seq.append((0, 0, 0, 0, 0, 0))
 
-    frame_count = 0
-    fps_time = time.time()
-    needs_render = False
+    total = len(yaw_seq)
+    print(f"\nPre-rendering {total} animation frames (this takes a few minutes)...")
+    print("The face will play smoothly at 30fps after rendering is done.\n")
 
+    frames_bgr = []
+    for i, (pitch, yaw, roll, blink, smile, mouth) in enumerate(yaw_seq):
+        t0 = time.time()
+        out = engine.animate_keyboard(pitch, yaw, roll, blink=blink, smile=smile, mouth=mouth)
+        dt = time.time() - t0
+        if out is not None:
+            frame_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
+            frames_bgr.append(frame_bgr)
+            cv2.imshow("AI Face Cam", frame_bgr)
+            cv2.waitKey(1)
+        pct = (i + 1) * 100 // total
+        bar = "#" * (pct // 5) + "-" * (20 - pct // 5)
+        sys.stdout.write(f"\r  [{bar}] {pct}% ({i+1}/{total}) - {dt:.1f}s/frame")
+        sys.stdout.flush()
+
+    print(f"\n\nDone! {len(frames_bgr)} frames ready.")
+    print("Playing animation loop through virtual camera at 30fps...")
+    print("Controls:")
+    print("  G = Generate new face (re-renders)")
+    print("  L = Load photo (re-renders)")
+    print("  ESC = Quit")
+    print()
+
+    idx = 0
     while True:
-        key = cv2.waitKey(30) & 0xFF
+        key = cv2.waitKey(33) & 0xFF
 
         if key == 27:
             break
-
-        moved = False
-        if key == ord('a') or key == ord('A'):
-            yaw -= speed; moved = True
-        elif key == ord('d') or key == ord('D'):
-            yaw += speed; moved = True
-        elif key == ord('w') or key == ord('W'):
-            pitch -= speed; moved = True
-        elif key == ord('s') or key == ord('S'):
-            pitch += speed; moved = True
-        elif key == ord('q') or key == ord('Q'):
-            roll -= speed; moved = True
-        elif key == ord('e') or key == ord('E'):
-            roll += speed; moved = True
-        elif key == ord('b') or key == ord('B'):
-            blink_val = 1.0 if blink_val < 0.5 else 0.0; moved = True
-        elif key == ord('n') or key == ord('N'):
-            smile_val = min(1.0, smile_val + 0.3) if smile_val < 0.9 else 0.0; moved = True
-        elif key == ord('m') or key == ord('M'):
-            mouth_val = min(1.0, mouth_val + 0.3) if mouth_val < 0.9 else 0.0; moved = True
-        elif key == ord('r') or key == ord('R'):
-            pitch, yaw, roll = 0.0, 0.0, 0.0
-            blink_val, smile_val, mouth_val = 0.0, 0.0, 0.0
-            moved = True
-            print("Pose reset!")
         elif key == ord('g') or key == ord('G'):
             path = generate_ai_face()
             if path:
                 img = cv2.imread(path)
                 if img is not None:
                     engine.prepare_source(img)
-                    pitch, yaw, roll = 0.0, 0.0, 0.0
-                    moved = True
+                    engine._debug_printed = False
+                    frames_bgr = []
+                    print(f"\nPre-rendering {total} frames for new face...")
+                    for i, (p, y, r, b, s, m) in enumerate(yaw_seq):
+                        out = engine.animate_keyboard(p, y, r, blink=b, smile=s, mouth=m)
+                        if out is not None:
+                            frames_bgr.append(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                            cv2.imshow("AI Face Cam", frames_bgr[-1])
+                            cv2.waitKey(1)
+                        sys.stdout.write(f"\r  {(i+1)*100//total}% ({i+1}/{total})")
+                        sys.stdout.flush()
+                    print(f"\n  Done! Playing new face.")
+                    idx = 0
         elif key == ord('l') or key == ord('L'):
             try:
                 import tkinter as tk
@@ -669,46 +680,33 @@ def main():
                     img = cv2.imread(path)
                     if img is not None:
                         engine.prepare_source(img)
-                        pitch, yaw, roll = 0.0, 0.0, 0.0
-                        moved = True
+                        engine._debug_printed = False
+                        frames_bgr = []
+                        print(f"\nPre-rendering {total} frames...")
+                        for i, (p, y, r, b, s, m) in enumerate(yaw_seq):
+                            out = engine.animate_keyboard(p, y, r, blink=b, smile=s, mouth=m)
+                            if out is not None:
+                                frames_bgr.append(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                            sys.stdout.write(f"\r  {(i+1)*100//total}% ({i+1}/{total})")
+                            sys.stdout.flush()
+                        print(f"\n  Done!")
+                        idx = 0
             except:
                 pass
 
-        yaw = np.clip(yaw, -30, 30)
-        pitch = np.clip(pitch, -25, 25)
-        roll = np.clip(roll, -20, 20)
+        if len(frames_bgr) > 0:
+            frame = frames_bgr[idx % len(frames_bgr)]
+            cv2.imshow("AI Face Cam", frame)
 
-        if moved or needs_render:
-            needs_render = False
+            if vcam is not None:
+                try:
+                    vcam_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    vcam_frame = cv2.resize(vcam_frame, (512, 512))
+                    vcam.send(vcam_frame)
+                except:
+                    pass
 
-            if out_img is not None:
-                proc_disp = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
-            else:
-                proc_disp = preview_bgr.copy()
-            info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f}"
-            cv2.putText(proc_disp, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(proc_disp, "Rendering...", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.imshow("AI Face Cam", proc_disp)
-            cv2.waitKey(1)
-
-            t0 = time.time()
-            out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
-            dt = time.time() - t0
-
-            if out_img is not None:
-                display = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
-
-                info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f} ({dt:.1f}s)"
-                cv2.putText(display, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-                cv2.imshow("AI Face Cam", display)
-
-                if vcam is not None:
-                    try:
-                        vcam_frame = cv2.resize(out_img, (512, 512))
-                        vcam.send(vcam_frame)
-                    except:
-                        pass
+            idx += 1
 
     if vcam:
         vcam.close()
