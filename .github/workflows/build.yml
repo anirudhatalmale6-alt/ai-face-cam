@@ -21,7 +21,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy "onnxruntime==1.26.0" pyvirtualcam pyinstaller
+          pip install opencv-python numpy "onnxruntime-gpu==1.26.0" pyvirtualcam pyinstaller
+          python -c "import onnxruntime; print('ORT version:', onnxruntime.__version__); print('Providers:', onnxruntime.get_available_providers())"
 
       - name: Download ORT SDK headers
         run: |
@@ -63,23 +64,26 @@ jobs:
           body: |
             ## AI Face Cam LivePortrait - Standalone Windows App
 
-            Real-time face animation using LivePortrait AI. No Python needed!
+            Real-time face animation using LivePortrait AI with NVIDIA GPU support.
 
             ### First run:
             - Downloads AI models automatically (~600MB, one time only)
             - Needs internet for first run, works offline after that
+            - NVIDIA GPU (CUDA) used automatically if available
 
             ### How to use:
             1. Download AIFaceCamLive.exe below
             2. Double-click to run
             3. Choose G (generate AI face) or L (load your photo)
-            4. Look at your webcam - the AI face follows your movements!
+            4. Use keyboard to animate the face
 
-            ### Controls:
-            - G = Generate new random AI face
-            - L = Load a face photo
-            - R = Reset pose tracking
-            - ESC = Quit
+            ### Keyboard Controls:
+            - A/D = Turn head left/right
+            - W/S = Look up/down
+            - Q/E = Tilt head
+            - B = Blink, N = Smile, M = Open mouth
+            - G = New AI face, L = Load photo
+            - R = Reset pose, ESC = Quit
 
             ### Virtual Webcam (for KYC):
             Install OBS Studio for virtual camera output.

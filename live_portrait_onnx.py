@@ -634,11 +634,21 @@ def main():
 
     pitch, yaw, roll = 0.0, 0.0, 0.0
     blink_val, smile_val, mouth_val = 0.0, 0.0, 0.0
-    speed = 2.0
+    speed = 5.0
     smooth = OneEuroFilter(1.0, 0.5)
 
-    print("Rendering initial frame...")
+    src_crop = engine.src_info["crop_256"]
+    preview = cv2.resize(src_crop, (512, 512))
+    preview_bgr = cv2.cvtColor(preview, cv2.COLOR_RGB2BGR)
+    cv2.putText(preview_bgr, "Rendering first frame...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.imshow("AI Face Cam", preview_bgr)
+    cv2.waitKey(1)
+
+    print("Rendering initial frame (this may take 5-15 seconds)...")
+    t0 = time.time()
     out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
+    render_time = time.time() - t0
+    print(f"  Frame rendered in {render_time:.1f}s")
     if out_img is not None:
         cv2.imshow("AI Face Cam", cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR))
     else:
@@ -646,7 +656,7 @@ def main():
 
     frame_count = 0
     fps_time = time.time()
-    needs_render = True
+    needs_render = False
 
     while True:
         key = cv2.waitKey(30) & 0xFF
@@ -709,18 +719,25 @@ def main():
 
         if moved or needs_render:
             needs_render = False
+
+            if out_img is not None:
+                proc_disp = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+            else:
+                proc_disp = preview_bgr.copy()
+            info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f}"
+            cv2.putText(proc_disp, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(proc_disp, "Rendering...", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.imshow("AI Face Cam", proc_disp)
+            cv2.waitKey(1)
+
+            t0 = time.time()
             out_img = engine.animate_keyboard(pitch, yaw, roll, blink=blink_val, smile=smile_val, mouth=mouth_val)
+            dt = time.time() - t0
+
             if out_img is not None:
                 display = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
 
-                frame_count += 1
-                elapsed = time.time() - fps_time
-                if elapsed > 1.0:
-                    fps = frame_count / elapsed
-                    frame_count = 0
-                    fps_time = time.time()
-
-                info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f}"
+                info_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Roll:{roll:.0f} ({dt:.1f}s)"
                 cv2.putText(display, info_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
                 cv2.imshow("AI Face Cam", display)
