@@ -794,8 +794,7 @@ def main():
 
             if vcam is not None:
                 try:
-                    vcam_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    vcam_frame = cv2.resize(vcam_frame, (512, 512))
+                    vcam_frame = cv2.resize(frame, (512, 512))
                     vcam.send(vcam_frame)
                 except:
                     pass
