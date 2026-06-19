@@ -21,8 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy "onnxruntime-gpu==1.26.0" pyvirtualcam pyinstaller
-          python -c "import onnxruntime; print('ORT version:', onnxruntime.__version__); print('Providers:', onnxruntime.get_available_providers())"
+          pip install opencv-python numpy "onnxruntime==1.26.0" pyvirtualcam pyinstaller
 
       - name: Download ORT SDK headers
         run: |
