@@ -189,6 +189,8 @@ class LivePortraitEngine:
     def __init__(self):
         self.sessions = {}
         self.src_info = None
+        self._debug_printed = False
+        self._output_norm = None
 
     def load_models(self):
         print("Loading AI models (this may take a moment)...")
@@ -232,6 +234,14 @@ class LivePortraitEngine:
             print(f"  Loading {short}...")
             self.sessions[short] = ort.InferenceSession(path, opts, providers=use_providers)
 
+        warp_sess = self.sessions.get("warping_spade-fix")
+        if warp_sess:
+            print("  Warping model inputs:")
+            for inp in warp_sess.get_inputs():
+                print(f"    {inp.name}: {inp.shape} ({inp.type})")
+            print("  Warping model outputs:")
+            for out in warp_sess.get_outputs():
+                print(f"    {out.name}: {out.shape} ({out.type})")
         print("All models loaded!\n")
 
     def _run_model(self, name, *inputs):
@@ -439,7 +449,16 @@ class LivePortraitEngine:
             src["x_s"].astype(np.float32)
         )[0]
 
-        out_img = np.clip((out[0].transpose(1, 2, 0) + 1) / 2, 0, 1) * 255
+        out_t = out[0].transpose(1, 2, 0)
+        if self._output_norm == "sigmoid":
+            out_img = np.clip(out_t, 0, 1) * 255
+        elif self._output_norm == "tanh":
+            out_img = np.clip((out_t + 1) / 2, 0, 1) * 255
+        elif self._output_norm and isinstance(self._output_norm, tuple):
+            vmin, vmax = self._output_norm[1], self._output_norm[2]
+            out_img = np.clip((out_t - vmin) / (vmax - vmin), 0, 1) * 255
+        else:
+            out_img = np.clip(out_t, 0, 1) * 255
         out_img = out_img.astype(np.uint8)
 
         return out_img
@@ -482,6 +501,14 @@ class LivePortraitEngine:
         x_d_new = x_d_new + delta[..., :3 * num_kp].reshape(1, num_kp, 3)
         x_d_new[..., :2] += delta[..., 3 * num_kp:3 * num_kp + 2].reshape(1, 1, 2)
 
+        if not self._debug_printed:
+            print(f"  [DEBUG] f_s: shape={src['f_s'].shape}, dtype={src['f_s'].dtype}, range=[{src['f_s'].min():.4f}, {src['f_s'].max():.4f}]")
+            print(f"  [DEBUG] x_s: shape={src['x_s'].shape}, range=[{src['x_s'].min():.4f}, {src['x_s'].max():.4f}]")
+            print(f"  [DEBUG] x_d: shape={x_d_new.shape}, range=[{x_d_new.min():.4f}, {x_d_new.max():.4f}]")
+            warp_sess = self.sessions["warping_spade-fix"]
+            for inp in warp_sess.get_inputs():
+                print(f"  [DEBUG] model expects: {inp.name} {inp.shape} {inp.type}")
+
         out = self._run_model(
             "warping_spade-fix",
             src["f_s"],
@@ -489,7 +516,39 @@ class LivePortraitEngine:
             src["x_s"].astype(np.float32)
         )[0]
 
-        out_img = np.clip((out[0].transpose(1, 2, 0) + 1) / 2, 0, 1) * 255
+        out_t = out[0].transpose(1, 2, 0)
+
+        if not self._debug_printed:
+            self._debug_printed = True
+            print(f"  [DEBUG] warp output: shape={out.shape}, dtype={out.dtype}")
+            print(f"  [DEBUG] warp output range: [{out.min():.4f}, {out.max():.4f}], mean={out.mean():.4f}")
+            for ch in range(min(3, out.shape[1])):
+                ch_data = out[0, ch]
+                print(f"  [DEBUG]   channel {ch}: [{ch_data.min():.4f}, {ch_data.max():.4f}], mean={ch_data.mean():.4f}")
+
+            if out.min() >= -0.1 and out.max() <= 1.1:
+                self._output_norm = "sigmoid"
+                print("  [DEBUG] Detected [0,1] sigmoid output")
+            elif out.min() >= -1.1 and out.max() <= 1.1:
+                self._output_norm = "tanh"
+                print("  [DEBUG] Detected [-1,1] tanh output")
+            else:
+                vmin = float(np.percentile(out_t, 1))
+                vmax = float(np.percentile(out_t, 99))
+                self._output_norm = ("custom", vmin, vmax)
+                print(f"  [DEBUG] Detected custom range, using percentile norm [{vmin:.3f}, {vmax:.3f}]")
+
+        if self._output_norm == "sigmoid":
+            out_img = np.clip(out_t, 0, 1) * 255
+        elif self._output_norm == "tanh":
+            out_img = np.clip((out_t + 1) / 2, 0, 1) * 255
+        else:
+            vmin, vmax = self._output_norm[1], self._output_norm[2]
+            if vmax - vmin > 0.01:
+                out_img = np.clip((out_t - vmin) / (vmax - vmin), 0, 1) * 255
+            else:
+                out_img = np.clip(out_t, 0, 1) * 255
+
         return out_img.astype(np.uint8)
 
 
