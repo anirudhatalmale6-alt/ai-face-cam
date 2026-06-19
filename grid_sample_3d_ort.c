@@ -1,7 +1,7 @@
 /*
  * GridSample3D custom operator for ONNX Runtime 1.26.0
  * Implements trilinear interpolation for 5D tensors
- * Struct layout matches ORT 1.26.0 exactly
+ * align_corners=False, padding_mode=zeros, mode=bilinear (trilinear for 3D)
  */
 #ifdef _WIN32
 #define ORT_API_MANUAL_INIT
@@ -55,7 +55,7 @@ static size_t ORT_API_CALL MyGetOutputTypeCount(const struct OrtCustomOp* op) {
     return 1;
 }
 
-/* KernelCompute */
+/* KernelCompute - trilinear interpolation with align_corners=False, padding_mode=zeros */
 static void ORT_API_CALL MyKernelCompute(void* op_kernel, OrtKernelContext* context) {
     const OrtValue* input_val = NULL;
     const OrtValue* grid_val = NULL;
@@ -96,30 +96,29 @@ static void ORT_API_CALL MyKernelCompute(void* op_kernel, OrtKernelContext* cont
                     float gy = grid_data[grid_idx * 3 + 1];
                     float gz = grid_data[grid_idx * 3 + 2];
 
-                    float fx = ((gx + 1.0f) * 0.5f) * (float)(W - 1);
-                    float fy = ((gy + 1.0f) * 0.5f) * (float)(H - 1);
-                    float fz = ((gz + 1.0f) * 0.5f) * (float)(D - 1);
+                    /* align_corners=False: map [-1,1] to [-0.5, size-0.5] */
+                    float fx = ((gx + 1.0f) * (float)W - 1.0f) * 0.5f;
+                    float fy = ((gy + 1.0f) * (float)H - 1.0f) * 0.5f;
+                    float fz = ((gz + 1.0f) * (float)D - 1.0f) * 0.5f;
 
                     int x0 = (int)floorf(fx), y0 = (int)floorf(fy), z0 = (int)floorf(fz);
                     int x1 = x0 + 1, y1 = y0 + 1, z1 = z0 + 1;
                     float wx = fx - (float)x0, wy = fy - (float)y0, wz = fz - (float)z0;
 
-#define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
-                    x0 = CLAMP(x0, 0, (int)(W-1)); x1 = CLAMP(x1, 0, (int)(W-1));
-                    y0 = CLAMP(y0, 0, (int)(H-1)); y1 = CLAMP(y1, 0, (int)(H-1));
-                    z0 = CLAMP(z0, 0, (int)(D-1)); z1 = CLAMP(z1, 0, (int)(D-1));
-#undef CLAMP
-
                     for (int64_t c = 0; c < C; c++) {
                         const float* vol = input_data + (n * C + c) * D * H * W;
-                        float c000 = vol[z0*H*W + y0*W + x0];
-                        float c001 = vol[z0*H*W + y0*W + x1];
-                        float c010 = vol[z0*H*W + y1*W + x0];
-                        float c011 = vol[z0*H*W + y1*W + x1];
-                        float c100 = vol[z1*H*W + y0*W + x0];
-                        float c101 = vol[z1*H*W + y0*W + x1];
-                        float c110 = vol[z1*H*W + y1*W + x0];
-                        float c111 = vol[z1*H*W + y1*W + x1];
+
+                        /* padding_mode=zeros: return 0 for out-of-bounds */
+#define SAFE(z,y,x) (((z)>=0 && (z)<D && (y)>=0 && (y)<H && (x)>=0 && (x)<W) ? vol[(z)*H*W+(y)*W+(x)] : 0.0f)
+                        float c000 = SAFE(z0, y0, x0);
+                        float c001 = SAFE(z0, y0, x1);
+                        float c010 = SAFE(z0, y1, x0);
+                        float c011 = SAFE(z0, y1, x1);
+                        float c100 = SAFE(z1, y0, x0);
+                        float c101 = SAFE(z1, y0, x1);
+                        float c110 = SAFE(z1, y1, x0);
+                        float c111 = SAFE(z1, y1, x1);
+#undef SAFE
 
                         float c00 = c000*(1-wx) + c001*wx;
                         float c01 = c010*(1-wx) + c011*wx;
