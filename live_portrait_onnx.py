@@ -589,7 +589,7 @@ def main():
                     else:
                         thumbs.append(np.zeros((170, 170, 3), dtype=np.uint8))
                 while True:
-                    gallery = np.zeros((420, 520, 3), dtype=np.uint8)
+                    gallery = np.zeros((420, 530, 3), dtype=np.uint8)
                     start = page * per_page
                     end = min(start + per_page, len(thumbs))
                     cv2.putText(gallery, f"Page {page+1}/{pages} - Press 1-6 to pick, A/D for pages", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
