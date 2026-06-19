@@ -303,6 +303,9 @@ class LivePortraitEngine:
         lmk_out = self._run_model("face_2dpose_106_static", lmk_input)
         lmk = lmk_out[0].reshape(106, 2)
 
+        lmk[:, 0] = (lmk[:, 0] + 1) / 2 * 192
+        lmk[:, 1] = (lmk[:, 1] + 1) / 2 * 192
+
         lmk[:, 0] = lmk[:, 0] / 192 * (x2 - x1) + x1
         lmk[:, 1] = lmk[:, 1] / 192 * (y2 - y1) + y1
 
@@ -449,12 +452,7 @@ class LivePortraitEngine:
         )[0]
 
         out_t = out[0].transpose(1, 2, 0)
-        p_lo = np.percentile(out_t, 2)
-        p_hi = np.percentile(out_t, 98)
-        if p_hi - p_lo > 0.02:
-            out_img = np.clip((out_t - p_lo) / (p_hi - p_lo), 0, 1) * 255
-        else:
-            out_img = np.clip(out_t, 0, 1) * 255
+        out_img = np.clip(out_t, 0, 1) * 255
         out_img = out_img.astype(np.uint8)
 
         return out_img
@@ -510,12 +508,7 @@ class LivePortraitEngine:
             self._debug_printed = True
             print(f"  [DEBUG] warp output range: [{out.min():.4f}, {out.max():.4f}], mean={out.mean():.4f}")
 
-        p_lo = np.percentile(out_t, 2)
-        p_hi = np.percentile(out_t, 98)
-        if p_hi - p_lo > 0.02:
-            out_img = np.clip((out_t - p_lo) / (p_hi - p_lo), 0, 1) * 255
-        else:
-            out_img = np.clip(out_t, 0, 1) * 255
+        out_img = np.clip(out_t, 0, 1) * 255
 
         return out_img.astype(np.uint8)
 
