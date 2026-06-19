@@ -372,6 +372,10 @@ class LivePortraitEngine:
         h, w = source_img_bgr.shape[:2]
         crop_512, M_512, M_512_inv = self.crop_face(img_rgb, lmk, target_size=512)
 
+        lmk_batch = lmk[None]
+        src_eye_ratio = calc_eye_close_ratio(lmk_batch)
+        src_lip_ratio = calc_lip_close_ratio(lmk_batch)
+
         self.src_info = {
             "f_s": f_s,
             "x_s": x_s,
@@ -391,6 +395,8 @@ class LivePortraitEngine:
             "mask_crop": mask_crop,
             "orig_shape": (h, w),
             "lmk": lmk,
+            "eye_ratio": src_eye_ratio,
+            "lip_ratio": src_lip_ratio,
         }
 
         print(f"  Source ready! Keypoints: {num_kp}, Pose: pitch={pitch[0]:.1f} yaw={yaw[0]:.1f} roll={roll[0]:.1f}")
@@ -472,20 +478,7 @@ class LivePortraitEngine:
         )
         R_new = R_delta @ src["R_s"]
 
-        exp_delta = np.zeros_like(src["exp"])
-        if blink > 0 and num_kp >= 21:
-            exp_delta[0, 11, 1] -= blink * 0.04
-            exp_delta[0, 13, 1] -= blink * 0.04
-        if smile > 0 and num_kp >= 21:
-            exp_delta[0, 14, 0] += smile * 0.03
-            exp_delta[0, 17, 0] -= smile * 0.03
-            exp_delta[0, 14, 1] -= smile * 0.01
-            exp_delta[0, 17, 1] -= smile * 0.01
-        if mouth > 0 and num_kp >= 21:
-            exp_delta[0, 19, 1] += mouth * 0.04
-            exp_delta[0, 20, 1] -= mouth * 0.02
-
-        x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + src["exp"] + exp_delta) + src["t"][:, None, :]
+        x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + src["exp"]) + src["t"][:, None, :]
 
         feat_stitch = np.concatenate([
             src["x_s"].reshape(1, -1),
@@ -494,6 +487,26 @@ class LivePortraitEngine:
         delta = self._run_model("stitching", feat_stitch)[0]
         x_d_new = x_d_new + delta[..., :3 * num_kp].reshape(1, num_kp, 3)
         x_d_new[..., :2] += delta[..., 3 * num_kp:3 * num_kp + 2].reshape(1, 1, 2)
+
+        if blink > 0:
+            drv_eye = np.array([[src["eye_ratio"][0, 0] * (1 - blink)]])
+            eye_input = np.concatenate([
+                src["x_s"].reshape(1, -1),
+                src["eye_ratio"],
+                drv_eye
+            ], axis=1).astype(np.float32)
+            eye_delta = self._run_model("stitching_eye", eye_input)[0]
+            x_d_new = x_d_new + eye_delta.reshape(1, num_kp, 3)
+
+        if smile > 0 or mouth > 0:
+            drv_lip = np.array([[src["lip_ratio"][0, 0] + max(smile, mouth) * 0.15]])
+            lip_input = np.concatenate([
+                src["x_s"].reshape(1, -1),
+                src["lip_ratio"],
+                drv_lip
+            ], axis=1).astype(np.float32)
+            lip_delta = self._run_model("stitching_lip", lip_input)[0]
+            x_d_new = x_d_new + lip_delta.reshape(1, num_kp, 3)
 
         out = self._run_model(
             "warping_spade-fix",
