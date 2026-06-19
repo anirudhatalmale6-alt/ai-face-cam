@@ -439,7 +439,7 @@ class LivePortraitEngine:
             src["x_s"].astype(np.float32)
         )[0]
 
-        out_img = np.clip(out[0].transpose(1, 2, 0), 0, 1) * 255
+        out_img = np.clip((out[0].transpose(1, 2, 0) + 1) / 2, 0, 1) * 255
         out_img = out_img.astype(np.uint8)
 
         return out_img
@@ -489,7 +489,7 @@ class LivePortraitEngine:
             src["x_s"].astype(np.float32)
         )[0]
 
-        out_img = np.clip(out[0].transpose(1, 2, 0), 0, 1) * 255
+        out_img = np.clip((out[0].transpose(1, 2, 0) + 1) / 2, 0, 1) * 255
         return out_img.astype(np.uint8)
 
 
