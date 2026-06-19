@@ -474,16 +474,16 @@ class LivePortraitEngine:
 
         exp_delta = np.zeros_like(src["exp"])
         if blink > 0 and num_kp >= 21:
-            exp_delta[0, 11, 1] -= blink * 0.15
-            exp_delta[0, 13, 1] -= blink * 0.15
+            exp_delta[0, 11, 1] -= blink * 0.04
+            exp_delta[0, 13, 1] -= blink * 0.04
         if smile > 0 and num_kp >= 21:
-            exp_delta[0, 14, 0] += smile * 0.08
-            exp_delta[0, 17, 0] -= smile * 0.08
-            exp_delta[0, 14, 1] -= smile * 0.03
-            exp_delta[0, 17, 1] -= smile * 0.03
+            exp_delta[0, 14, 0] += smile * 0.03
+            exp_delta[0, 17, 0] -= smile * 0.03
+            exp_delta[0, 14, 1] -= smile * 0.01
+            exp_delta[0, 17, 1] -= smile * 0.01
         if mouth > 0 and num_kp >= 21:
-            exp_delta[0, 19, 1] += mouth * 0.12
-            exp_delta[0, 20, 1] -= mouth * 0.05
+            exp_delta[0, 19, 1] += mouth * 0.04
+            exp_delta[0, 20, 1] -= mouth * 0.02
 
         x_d_new = src["scale"][..., None] * (src["kp"] @ R_new + src["exp"] + exp_delta) + src["t"][:, None, :]
 
@@ -536,9 +536,10 @@ def main():
     if source_path is None:
         print("No source face provided. Options:")
         print("  G = Generate random AI face")
+        print("  C = Choose from 6 AI faces (gallery)")
         print("  L = Load a photo from file")
         print()
-        choice = input("Choose (G/L): ").strip().upper()
+        choice = input("Choose (G/C/L): ").strip().upper()
         if choice == "L":
             try:
                 import tkinter as tk
@@ -552,6 +553,39 @@ def main():
                 root.destroy()
             except:
                 source_path = input("Enter path to face photo: ").strip().strip('"')
+        elif choice == "C":
+            print("Generating 6 AI faces...")
+            face_paths = []
+            for i in range(6):
+                p = generate_ai_face()
+                if p:
+                    face_paths.append(p)
+            if face_paths:
+                print(f"\nGenerated {len(face_paths)} faces. Showing gallery...")
+                thumbs = []
+                for p in face_paths:
+                    t = cv2.imread(p)
+                    if t is not None:
+                        thumbs.append(cv2.resize(t, (170, 170)))
+                gallery = np.zeros((385, 520, 3), dtype=np.uint8)
+                cv2.putText(gallery, "Press 1-6 to choose a face:", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                for i, thumb in enumerate(thumbs):
+                    row, col = i // 3, i % 3
+                    y0, x0 = 35 + row * 175, 5 + col * 175
+                    gallery[y0:y0+170, x0:x0+170] = thumb
+                    cv2.putText(gallery, str(i+1), (x0+5, y0+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.imshow("AI Face Cam", gallery)
+                while True:
+                    k = cv2.waitKey(100) & 0xFF
+                    if k >= ord('1') and k <= ord('6') and (k - ord('1')) < len(face_paths):
+                        source_path = face_paths[k - ord('1')]
+                        print(f"  Selected face {k - ord('0')}")
+                        break
+                    if k == 27:
+                        source_path = face_paths[0]
+                        break
+            else:
+                source_path = generate_ai_face()
         else:
             source_path = generate_ai_face()
 
@@ -580,8 +614,8 @@ def main():
             print("Install OBS Studio for virtual camera output.")
 
     def prerender_poses(eng):
-        yaw_vals = np.arange(-20, 21, 4)
-        pitch_vals = np.arange(-15, 16, 5)
+        yaw_vals = np.arange(-30, 31, 3)
+        pitch_vals = np.arange(-20, 21, 4)
         grid = {}
         specials = {}
         total = len(yaw_vals) * len(pitch_vals) + 4
