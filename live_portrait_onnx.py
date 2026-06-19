@@ -536,7 +536,7 @@ def main():
     if source_path is None:
         print("No source face provided. Options:")
         print("  G = Generate random AI face")
-        print("  C = Choose from 6 AI faces (gallery)")
+        print("  C = Choose from gallery (18 AI faces, 3 pages)")
         print("  L = Load a photo from file")
         print()
         choice = input("Choose (G/C/L): ").strip().upper()
@@ -554,34 +554,51 @@ def main():
             except:
                 source_path = input("Enter path to face photo: ").strip().strip('"')
         elif choice == "C":
-            print("Generating 6 AI faces...")
+            num_faces = 18
+            print(f"Generating {num_faces} AI faces (this takes about 30 seconds)...")
             face_paths = []
-            for i in range(6):
+            for i in range(num_faces):
+                sys.stdout.write(f"\r  Downloading face {i+1}/{num_faces}...")
+                sys.stdout.flush()
                 p = generate_ai_face()
                 if p:
                     face_paths.append(p)
+            print(f"\n  {len(face_paths)} faces ready!\n")
             if face_paths:
-                print(f"\nGenerated {len(face_paths)} faces. Showing gallery...")
+                per_page = 6
+                pages = (len(face_paths) + per_page - 1) // per_page
+                page = 0
                 thumbs = []
                 for p in face_paths:
                     t = cv2.imread(p)
                     if t is not None:
                         thumbs.append(cv2.resize(t, (170, 170)))
-                gallery = np.zeros((385, 520, 3), dtype=np.uint8)
-                cv2.putText(gallery, "Press 1-6 to choose a face:", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                for i, thumb in enumerate(thumbs):
-                    row, col = i // 3, i % 3
-                    y0, x0 = 35 + row * 175, 5 + col * 175
-                    gallery[y0:y0+170, x0:x0+170] = thumb
-                    cv2.putText(gallery, str(i+1), (x0+5, y0+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                cv2.imshow("AI Face Cam", gallery)
+                    else:
+                        thumbs.append(np.zeros((170, 170, 3), dtype=np.uint8))
                 while True:
+                    gallery = np.zeros((420, 520, 3), dtype=np.uint8)
+                    start = page * per_page
+                    end = min(start + per_page, len(thumbs))
+                    cv2.putText(gallery, f"Page {page+1}/{pages} - Press 1-6 to pick, A/D for pages", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+                    for i in range(start, end):
+                        idx = i - start
+                        row, col = idx // 3, idx % 3
+                        y0, x0 = 35 + row * 185, 5 + col * 175
+                        gallery[y0:y0+170, x0:x0+170] = thumbs[i]
+                        cv2.putText(gallery, str(idx+1), (x0+5, y0+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    cv2.imshow("AI Face Cam", gallery)
                     k = cv2.waitKey(100) & 0xFF
-                    if k >= ord('1') and k <= ord('6') and (k - ord('1')) < len(face_paths):
-                        source_path = face_paths[k - ord('1')]
-                        print(f"  Selected face {k - ord('0')}")
-                        break
-                    if k == 27:
+                    if k >= ord('1') and k <= ord('6'):
+                        sel = start + (k - ord('1'))
+                        if sel < len(face_paths):
+                            source_path = face_paths[sel]
+                            print(f"  Selected face #{sel+1}")
+                            break
+                    elif k == ord('d') or k == ord('D') or k == 83:
+                        page = min(pages - 1, page + 1)
+                    elif k == ord('a') or k == ord('A') or k == 81:
+                        page = max(0, page - 1)
+                    elif k == 27:
                         source_path = face_paths[0]
                         break
             else:
