@@ -1,14 +1,18 @@
 """
-AI Face Cam - LivePortrait ONNX
+AI Face Cam - LivePortrait ONNX v2
 Real-time face animation using LivePortrait ONNX models.
+Smooth interpolation, natural idle behavior, expression blending.
 No PyTorch needed - uses onnxruntime + numpy only.
 """
 import os
 import sys
 import time
+import math
 import urllib.request
 import numpy as np
 import cv2
+import glob
+import argparse
 
 try:
     import onnxruntime as ort
@@ -41,8 +45,6 @@ MODEL_FILES = {
     "retinaface_det_static.onnx": f"{HF_BASE}/retinaface_det_static.onnx",
     "face_2dpose_106_static.onnx": f"{HF_BASE}/face_2dpose_106_static.onnx",
 }
-
-MASK_CROP = None
 
 
 def download_model(name, url, dest_dir):
@@ -86,7 +88,6 @@ def download_all_models():
 
 
 def generate_ai_face():
-    """Download a random AI-generated face"""
     os.makedirs(FACES_DIR, exist_ok=True)
     print("Generating AI face from thispersondoesnotexist.com...")
     try:
@@ -170,19 +171,137 @@ def calc_lip_close_ratio(lmk):
     return dist(90, 102) / (dist(48, 66) + 1e-6)
 
 
-class OneEuroFilter:
-    def __init__(self, t_e=1.0, alpha=0.3):
-        self.t_e = t_e
-        self.alpha = alpha
-        self.prev = None
+class SmoothValue:
+    """Smooth interpolation for a floating point value"""
+    def __init__(self, value=0.0, speed=5.0):
+        self.current = value
+        self.target = value
+        self.speed = speed
 
-    def __call__(self, x):
-        if self.prev is None:
-            self.prev = x.copy()
-            return x
-        result = self.alpha * x + (1 - self.alpha) * self.prev
-        self.prev = result.copy()
-        return result
+    def set_target(self, target):
+        self.target = target
+
+    def update(self, dt):
+        diff = self.target - self.current
+        self.current += diff * min(1.0, self.speed * dt)
+        return self.current
+
+    def snap(self, value):
+        self.current = value
+        self.target = value
+
+
+class NaturalBehavior:
+    """Generates natural idle behavior - breathing, micro-movements, blinking"""
+    def __init__(self):
+        self.t = 0.0
+        self.blink_value = 0.0
+        self.next_blink = np.random.uniform(2.5, 6.0)
+        self.blink_phase = 0
+        self.blink_speed = 0.0
+        self.double_blink = False
+        self.double_blink_pause = 0.0
+
+        self.breath_rate = np.random.uniform(0.18, 0.25)
+        self.breath_phase = 0.0
+
+        self.micro_yaw = 0.0
+        self.micro_pitch = 0.0
+        self.micro_roll = 0.0
+        self.micro_targets = [0.0, 0.0, 0.0]
+        self.micro_timer = 0.0
+        self.micro_interval = np.random.uniform(1.5, 4.0)
+
+        self.smile_value = 0.0
+        self.smile_target = 0.0
+        self.next_smile = np.random.uniform(8.0, 20.0)
+
+    def update(self, dt):
+        self.t += dt
+
+        # Breathing - subtle pitch oscillation
+        self.breath_phase += dt * self.breath_rate * 2 * math.pi
+        breath_pitch = math.sin(self.breath_phase) * 0.6
+        breath_scale = 1.0 + math.sin(self.breath_phase) * 0.003
+
+        # Blinking
+        self._update_blink(dt)
+
+        # Micro-movements
+        self._update_micro(dt)
+
+        # Occasional subtle smile
+        self._update_smile(dt)
+
+        return {
+            "blink": self.blink_value,
+            "breath_pitch": breath_pitch,
+            "breath_scale": breath_scale,
+            "micro_yaw": self.micro_yaw,
+            "micro_pitch": self.micro_pitch + breath_pitch,
+            "micro_roll": self.micro_roll,
+            "smile": self.smile_value,
+        }
+
+    def _update_blink(self, dt):
+        if self.blink_phase == 0:
+            self.next_blink -= dt
+            if self.next_blink <= 0:
+                self.blink_phase = 1
+                self.blink_speed = np.random.uniform(8.0, 14.0)
+                self.double_blink = np.random.random() < 0.15
+                self.next_blink = np.random.uniform(2.5, 7.0)
+        elif self.blink_phase == 1:  # closing
+            self.blink_value += dt * self.blink_speed
+            if self.blink_value >= 1.0:
+                self.blink_value = 1.0
+                self.blink_phase = 2
+        elif self.blink_phase == 2:  # opening
+            self.blink_value -= dt * self.blink_speed * 0.8
+            if self.blink_value <= 0.0:
+                self.blink_value = 0.0
+                if self.double_blink:
+                    self.double_blink = False
+                    self.blink_phase = 3
+                    self.double_blink_pause = 0.08
+                else:
+                    self.blink_phase = 0
+        elif self.blink_phase == 3:  # pause before double blink
+            self.double_blink_pause -= dt
+            if self.double_blink_pause <= 0:
+                self.blink_phase = 1
+                self.blink_speed = np.random.uniform(10.0, 16.0)
+
+    def _update_micro(self, dt):
+        self.micro_timer += dt
+        if self.micro_timer >= self.micro_interval:
+            self.micro_timer = 0
+            self.micro_interval = np.random.uniform(1.5, 4.0)
+            self.micro_targets = [
+                np.random.uniform(-1.2, 1.2),
+                np.random.uniform(-0.8, 0.8),
+                np.random.uniform(-0.4, 0.4),
+            ]
+
+        smooth = min(1.0, 2.0 * dt)
+        self.micro_yaw += (self.micro_targets[0] - self.micro_yaw) * smooth
+        self.micro_pitch += (self.micro_targets[1] - self.micro_pitch) * smooth
+        self.micro_roll += (self.micro_targets[2] - self.micro_roll) * smooth
+
+    def _update_smile(self, dt):
+        self.next_smile -= dt
+        if self.next_smile <= 0:
+            self.smile_target = np.random.uniform(0.0, 0.4) if self.smile_target < 0.1 else 0.0
+            self.next_smile = np.random.uniform(5.0, 15.0)
+
+        smooth = min(1.0, 1.5 * dt)
+        self.smile_value += (self.smile_target - self.smile_value) * smooth
+
+    def force_blink(self):
+        if self.blink_phase == 0:
+            self.blink_phase = 1
+            self.blink_speed = np.random.uniform(8.0, 12.0)
+            self.double_blink = False
 
 
 class LivePortraitEngine:
@@ -215,6 +334,10 @@ class LivePortraitEngine:
             candidate = os.path.join(BASE_DIR, "grid_sample_3d_ort.dll")
             if os.path.exists(candidate):
                 plugin_dll = candidate
+        if plugin_dll is None:
+            candidate = os.path.join(BASE_DIR, "grid_sample_3d_ort.so")
+            if os.path.exists(candidate):
+                plugin_dll = candidate
 
         if plugin_dll:
             try:
@@ -223,10 +346,10 @@ class LivePortraitEngine:
             except Exception as e:
                 print(f"  Warning: Could not register custom op: {e}")
         else:
-            print("  Warning: grid_sample_3d_ort.dll not found!")
+            print("  Warning: grid_sample_3d_ort not found!")
 
         for name in MODEL_FILES:
-            if name.endswith(".dll"):
+            if name.endswith((".dll", ".so")):
                 continue
             path = os.path.join(MODELS_DIR, name)
             short = name.replace(".onnx", "")
@@ -238,9 +361,6 @@ class LivePortraitEngine:
             print("  Warping model inputs:")
             for inp in warp_sess.get_inputs():
                 print(f"    {inp.name}: {inp.shape} ({inp.type})")
-            print("  Warping model outputs:")
-            for out in warp_sess.get_outputs():
-                print(f"    {out.name}: {out.shape} ({out.type})")
         print("All models loaded!\n")
 
     def _run_model(self, name, *inputs):
@@ -255,20 +375,11 @@ class LivePortraitEngine:
         return sess.run(None, feed)
 
     def _init_face_detector(self):
-        """Initialize OpenCV DNN face detector"""
-        if not hasattr(self, '_face_det'):
+        if not hasattr(self, '_face_cascade'):
             proto = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
             self._face_cascade = cv2.CascadeClassifier(proto)
-            try:
-                self._face_det = cv2.FaceDetectorYN.create(
-                    "", "", (300, 300), 0.5, 0.3, 5000
-                )
-                self._use_dnn = False
-            except:
-                self._use_dnn = False
 
     def detect_face(self, img_bgr):
-        """Detect face and return 106 landmarks"""
         self._init_face_detector()
         h, w = img_bgr.shape[:2]
 
@@ -312,7 +423,6 @@ class LivePortraitEngine:
         return lmk
 
     def crop_face(self, img_rgb, lmk, scale=2.3, target_size=256):
-        """Crop face region centered on landmarks"""
         cx = np.mean(lmk[:, 0])
         cy = np.mean(lmk[:, 1])
         face_w = (np.max(lmk[:, 0]) - np.min(lmk[:, 0])) * scale
@@ -337,7 +447,6 @@ class LivePortraitEngine:
         return crop, M, M_inv
 
     def prepare_source(self, source_img_bgr):
-        """Process source image - extract features and motion"""
         print("Processing source face...")
         img_rgb = cv2.cvtColor(source_img_bgr, cv2.COLOR_BGR2RGB)
 
@@ -370,7 +479,6 @@ class LivePortraitEngine:
         mask_crop = cv2.GaussianBlur(mask_crop, (51, 51), 20)
 
         h, w = source_img_bgr.shape[:2]
-        crop_512, M_512, M_512_inv = self.crop_face(img_rgb, lmk, target_size=512)
 
         lmk_batch = lmk[None]
         src_eye_ratio = calc_eye_close_ratio(lmk_batch)
@@ -391,7 +499,6 @@ class LivePortraitEngine:
             "crop_256": crop_256,
             "img_rgb": img_rgb,
             "M_inv": M_inv,
-            "M_512_inv": M_512_inv,
             "mask_crop": mask_crop,
             "orig_shape": (h, w),
             "lmk": lmk,
@@ -402,69 +509,7 @@ class LivePortraitEngine:
         print(f"  Source ready! Keypoints: {num_kp}, Pose: pitch={pitch[0]:.1f} yaw={yaw[0]:.1f} roll={roll[0]:.1f}")
         return True
 
-    def animate_frame(self, driving_img_bgr, d0_info=None):
-        """Animate source face using driving frame's motion"""
-        if self.src_info is None:
-            return None
-
-        driving_rgb = cv2.cvtColor(driving_img_bgr, cv2.COLOR_BGR2RGB)
-        lmk_d = self.detect_face(driving_img_bgr)
-        if lmk_d is None:
-            return None
-
-        crop_d, _, _ = self.crop_face(driving_rgb, lmk_d)
-        crop_input = (crop_d.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
-
-        mot_out = self._run_model("motion_extractor", crop_input)
-        pitch_d, yaw_d, roll_d, t_d, exp_d, scale_d, kp_d = mot_out
-        pitch_d = headpose_pred_to_degree(pitch_d)
-        yaw_d = headpose_pred_to_degree(yaw_d)
-        roll_d = headpose_pred_to_degree(roll_d)
-        exp_d = exp_d.reshape(1, -1, 3)
-        R_d = get_rotation_matrix(pitch_d, yaw_d, roll_d)
-
-        info = {
-            "pitch": pitch_d, "yaw": yaw_d, "roll": roll_d,
-            "t": t_d, "exp": exp_d, "scale": scale_d,
-            "R": R_d,
-        }
-
-        if d0_info is None:
-            return info
-
-        src = self.src_info
-        R_new = R_d @ np.linalg.inv(d0_info["R"]) @ src["R_s"]
-        delta_exp = src["exp"] + (exp_d - d0_info["exp"])
-        scale_new = src["scale"] * (scale_d / (d0_info["scale"] + 1e-6))
-        t_new = src["t"] + (t_d - d0_info["t"])
-        t_new[..., 2] = 0
-
-        x_d_new = scale_new[..., None] * (src["kp"] @ R_new + delta_exp) + t_new[:, None, :]
-
-        feat_stitch = np.concatenate([
-            src["x_s"].reshape(1, -1),
-            x_d_new.reshape(1, -1)
-        ], axis=1).astype(np.float32)
-        delta = self._run_model("stitching", feat_stitch)[0]
-        num_kp = src["num_kp"]
-        x_d_new = x_d_new + delta[..., :3 * num_kp].reshape(1, num_kp, 3)
-        x_d_new[..., :2] += delta[..., 3 * num_kp:3 * num_kp + 2].reshape(1, 1, 2)
-
-        out = self._run_model(
-            "warping_spade-fix",
-            src["f_s"],
-            x_d_new.astype(np.float32),
-            src["x_s"].astype(np.float32)
-        )[0]
-
-        out_t = out[0].transpose(1, 2, 0)
-        out_img = np.clip(out_t, 0, 1) * 255
-        out_img = out_img.astype(np.uint8)
-
-        return out_img
-
     def animate_keyboard(self, pitch_delta=0, yaw_delta=0, roll_delta=0, exp_scale=1.0, blink=0, smile=0, mouth=0):
-        """Animate source face using keyboard-controlled motion parameters"""
         if self.src_info is None:
             return None
 
@@ -522,14 +567,42 @@ class LivePortraitEngine:
             print(f"  [DEBUG] warp output range: [{out.min():.4f}, {out.max():.4f}], mean={out.mean():.4f}")
 
         out_img = np.clip(out_t, 0, 1) * 255
-
         return out_img.astype(np.uint8)
 
 
+def list_saved_faces():
+    os.makedirs(FACES_DIR, exist_ok=True)
+    exts = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+    faces = []
+    for ext in exts:
+        faces.extend(glob.glob(os.path.join(FACES_DIR, ext)))
+    faces.sort(key=os.path.getmtime, reverse=True)
+    return faces
+
+
+def save_face_to_gallery(img_path):
+    os.makedirs(FACES_DIR, exist_ok=True)
+    name = os.path.basename(img_path)
+    dest = os.path.join(FACES_DIR, name)
+    if not os.path.exists(dest):
+        import shutil
+        shutil.copy2(img_path, dest)
+    return dest
+
+
 def main():
+    parser = argparse.ArgumentParser(description='AI Face Cam - LivePortrait ONNX v2')
+    parser.add_argument('image', nargs='?', help='Path to source face image')
+    parser.add_argument('--no-virtual-cam', action='store_true', help='Disable virtual camera output')
+    parser.add_argument('--resolution', type=int, default=512, choices=[256, 512], help='Output resolution')
+    parser.add_argument('--hide-hud', action='store_true', help='Hide the on-screen HUD info')
+    args = parser.parse_args()
+
+    RES = args.resolution
+
     print("=" * 50)
-    print("  AI Face Cam - LivePortrait ONNX")
-    print("  Real-time face animation")
+    print("  AI Face Cam - LivePortrait ONNX v2")
+    print("  Smooth animation with natural behavior")
     print("=" * 50)
     print()
 
@@ -540,19 +613,21 @@ def main():
     engine = LivePortraitEngine()
     engine.load_models()
 
-    source_path = None
-    for arg in sys.argv[1:]:
-        if os.path.exists(arg):
-            source_path = arg
-            break
+    source_path = args.image
 
     if source_path is None:
+        saved = list_saved_faces()
         print("No source face provided. Options:")
         print("  G = Generate random AI face")
-        print("  C = Choose from gallery (18 AI faces, 3 pages)")
+        print("  C = Choose from gallery" + (f" ({len(saved)} saved)" if saved else " (generate new)"))
         print("  L = Load a photo from file")
+        if saved:
+            print(f"  1-9 = Quick pick from recent faces")
+            for i, fp in enumerate(saved[:9]):
+                print(f"    {i+1}: {os.path.basename(fp)}")
         print()
-        choice = input("Choose (G/C/L): ").strip().upper()
+        choice = input("Choose: ").strip().upper()
+
         if choice == "L":
             try:
                 import tkinter as tk
@@ -564,25 +639,32 @@ def main():
                     filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp")]
                 )
                 root.destroy()
+                if source_path:
+                    save_face_to_gallery(source_path)
             except:
                 source_path = input("Enter path to face photo: ").strip().strip('"')
+                if source_path and os.path.exists(source_path):
+                    save_face_to_gallery(source_path)
         elif choice == "C":
-            num_faces = 18
-            print(f"Generating {num_faces} AI faces (this takes about 30 seconds)...")
-            face_paths = []
-            for i in range(num_faces):
-                sys.stdout.write(f"\r  Downloading face {i+1}/{num_faces}...")
-                sys.stdout.flush()
-                p = generate_ai_face()
-                if p:
-                    face_paths.append(p)
-            print(f"\n  {len(face_paths)} faces ready!\n")
-            if face_paths:
+            if saved:
+                num_faces = len(saved)
+            else:
+                num_faces = 18
+                print(f"Generating {num_faces} AI faces...")
+                for i in range(num_faces):
+                    sys.stdout.write(f"\r  Downloading face {i+1}/{num_faces}...")
+                    sys.stdout.flush()
+                    generate_ai_face()
+                print()
+                saved = list_saved_faces()
+                num_faces = len(saved)
+
+            if saved:
                 per_page = 6
-                pages = (len(face_paths) + per_page - 1) // per_page
+                pages = (len(saved) + per_page - 1) // per_page
                 page = 0
                 thumbs = []
-                for p in face_paths:
+                for p in saved:
                     t = cv2.imread(p)
                     if t is not None:
                         thumbs.append(cv2.resize(t, (170, 170)))
@@ -592,30 +674,35 @@ def main():
                     gallery = np.zeros((420, 530, 3), dtype=np.uint8)
                     start = page * per_page
                     end = min(start + per_page, len(thumbs))
-                    cv2.putText(gallery, f"Page {page+1}/{pages} - Press 1-6 to pick, A/D for pages", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+                    cv2.putText(gallery, f"Page {page+1}/{pages} - Press 1-6 to pick, A/D for pages, ESC to cancel",
+                               (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     for i in range(start, end):
                         idx = i - start
                         row, col = idx // 3, idx % 3
                         y0, x0 = 35 + row * 185, 5 + col * 175
                         gallery[y0:y0+170, x0:x0+170] = thumbs[i]
                         cv2.putText(gallery, str(idx+1), (x0+5, y0+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        cv2.putText(gallery, os.path.basename(saved[i])[:18], (x0+5, y0+165),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
                     cv2.imshow("AI Face Cam", gallery)
                     k = cv2.waitKey(100) & 0xFF
                     if k >= ord('1') and k <= ord('6'):
                         sel = start + (k - ord('1'))
-                        if sel < len(face_paths):
-                            source_path = face_paths[sel]
-                            print(f"  Selected face #{sel+1}")
+                        if sel < len(saved):
+                            source_path = saved[sel]
+                            print(f"  Selected: {os.path.basename(source_path)}")
                             break
-                    elif k == ord('d') or k == ord('D') or k == 83:
+                    elif k in (ord('d'), ord('D'), 83):
                         page = min(pages - 1, page + 1)
-                    elif k == ord('a') or k == ord('A') or k == 81:
+                    elif k in (ord('a'), ord('A'), 81):
                         page = max(0, page - 1)
                     elif k == 27:
-                        source_path = face_paths[0]
                         break
-            else:
-                source_path = generate_ai_face()
+        elif choice.isdigit() and 1 <= int(choice) <= min(9, len(saved)):
+            source_path = saved[int(choice) - 1]
+            print(f"  Selected: {os.path.basename(source_path)}")
+        elif choice == "G":
+            source_path = generate_ai_face()
         else:
             source_path = generate_ai_face()
 
@@ -635,23 +722,38 @@ def main():
         return
 
     vcam = None
-    if HAS_VCAM:
+    if HAS_VCAM and not args.no_virtual_cam:
         try:
-            vcam = pyvirtualcam.Camera(width=512, height=512, fps=30, fmt=pyvirtualcam.PixelFormat.BGR)
+            vcam = pyvirtualcam.Camera(width=RES, height=RES, fps=30, fmt=pyvirtualcam.PixelFormat.BGR)
             print(f"Virtual camera: {vcam.device}")
         except Exception as e:
             print(f"Virtual camera not available: {e}")
             print("Install OBS Studio for virtual camera output.")
 
+    # Pre-render poses with finer granularity
     def prerender_poses(eng):
-        yaw_vals = np.arange(-30, 31, 3)
-        pitch_vals = np.arange(-20, 21, 4)
+        yaw_step = 2
+        pitch_step = 2
+        yaw_vals = np.arange(-30, 31, yaw_step)
+        pitch_vals = np.arange(-20, 21, pitch_step)
         grid = {}
         specials = {}
-        total = len(yaw_vals) * len(pitch_vals) + 4
+
+        expr_combos = [
+            ("blink", {"blink": 1.0}),
+            ("blink_half", {"blink": 0.5}),
+            ("smile", {"smile": 1.0}),
+            ("smile_half", {"smile": 0.5}),
+            ("mouth", {"mouth": 1.0}),
+            ("mouth_half", {"mouth": 0.5}),
+            ("blink+smile", {"blink": 1.0, "smile": 0.6}),
+        ]
+
+        total = len(yaw_vals) * len(pitch_vals) + len(expr_combos)
         count = 0
-        print(f"\nPre-rendering {total} pose frames (takes a few minutes)...")
-        print("After this, the face moves INSTANTLY with keyboard.\n")
+        print(f"\nPre-rendering {total} frames ({len(yaw_vals)}x{len(pitch_vals)} poses + {len(expr_combos)} expressions)...")
+        print("This takes a few minutes. After this, animation is INSTANT.\n")
+
         for p in pitch_vals:
             for y in yaw_vals:
                 out = eng.animate_keyboard(float(p), float(y), 0)
@@ -663,86 +765,227 @@ def main():
                 pct = count * 100 // total
                 sys.stdout.write(f"\r  [{('#' * (pct//5))}{('-' * (20-pct//5))}] {pct}% ({count}/{total})")
                 sys.stdout.flush()
-        for label, kwargs in [("blink", {"blink": 1.0}), ("smile", {"smile": 1.0}), ("mouth", {"mouth": 1.0}), ("blink+smile", {"blink": 1.0, "smile": 1.0})]:
+
+        for label, kwargs in expr_combos:
             out = eng.animate_keyboard(0, 0, 0, **kwargs)
             if out is not None:
                 specials[label] = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
             count += 1
-            sys.stdout.write(f"\r  [{('#' * (count*100//total//5))}{('-' * (20-count*100//total//5))}] {count*100//total}% ({count}/{total})")
+            pct = count * 100 // total
+            sys.stdout.write(f"\r  [{('#' * (pct//5))}{('-' * (20-pct//5))}] {pct}% ({count}/{total})")
             sys.stdout.flush()
+
+        # Pre-render blink at a few yaw positions for smooth blinking during head turns
+        print("\n  Pre-rendering expressions at different head positions...")
+        extra = 0
+        for yaw_off in [-15, -9, -3, 3, 9, 15]:
+            for blink_lbl, blink_val in [("blink", 1.0), ("blink_half", 0.5)]:
+                out = eng.animate_keyboard(0, float(yaw_off), 0, blink=blink_val)
+                if out is not None:
+                    specials[f"{blink_lbl}_y{yaw_off}"] = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
+                    extra += 1
+
         print(f"\n  Done! {len(grid)} pose frames + {len(specials)} expressions ready.\n")
         return grid, specials, yaw_vals, pitch_vals
 
     grid, specials, yaw_vals, pitch_vals = prerender_poses(engine)
 
-    print("Controls (INSTANT - no delay!):")
+    print("Controls:")
     print("  A/D  = Turn head left/right")
     print("  W/S  = Look up/down")
-    print("  B    = Blink")
-    print("  N    = Smile")
-    print("  M    = Open mouth")
-    print("  R    = Reset to center")
-    print("  P    = Play auto-loop (for KYC)")
+    print("  Q/E  = Tilt head")
+    print("  B    = Manual blink")
+    print("  N    = Smile toggle")
+    print("  M    = Open mouth toggle")
+    print("  P    = Auto movement (natural)")
+    print("  H    = Toggle HUD")
     print("  G    = New AI face")
-    print("  L    = Load photo")
+    print("  L    = Load photo from file")
+    print("  R    = Reset to center")
+    print("  +/-  = Adjust movement speed")
     print("  ESC  = Quit")
     print()
 
-    cur_yaw_idx = len(yaw_vals) // 2
-    cur_pitch_idx = len(pitch_vals) // 2
-    expression = None
-    auto_loop = False
-    loop_seq = []
-    for y in range(len(yaw_vals)//2, -1, -1):
-        loop_seq.append((len(pitch_vals)//2, y))
-    for y in range(0, len(yaw_vals)):
-        loop_seq.append((len(pitch_vals)//2, y))
-    for y in range(len(yaw_vals)-1, len(yaw_vals)//2, -1):
-        loop_seq.append((len(pitch_vals)//2, y))
-    for p in range(len(pitch_vals)//2, 0, -1):
-        loop_seq.append((p, len(yaw_vals)//2))
-    for p in range(0, len(pitch_vals)):
-        loop_seq.append((p, len(yaw_vals)//2))
-    for p in range(len(pitch_vals)-1, len(pitch_vals)//2, -1):
-        loop_seq.append((p, len(yaw_vals)//2))
-    loop_seq.append((len(pitch_vals)//2, len(yaw_vals)//2))
-    loop_seq.append((len(pitch_vals)//2, len(yaw_vals)//2))
-    loop_idx = 0
-    blink_timer = 0
+    # Smooth state
+    yaw_smooth = SmoothValue(0.0, speed=6.0)
+    pitch_smooth = SmoothValue(0.0, speed=6.0)
+    roll_smooth = SmoothValue(0.0, speed=4.0)
 
-    def get_frame(pi, yi, expr=None):
-        p = int(pitch_vals[np.clip(pi, 0, len(pitch_vals)-1)])
-        y = int(yaw_vals[np.clip(yi, 0, len(yaw_vals)-1)])
-        if expr and expr in specials:
-            return specials[expr]
-        return grid.get((p, y), grid.get((0, 0)))
+    target_yaw = 0.0
+    target_pitch = 0.0
+    target_roll = 0.0
+    move_speed = 2.5
+
+    behavior = NaturalBehavior()
+    auto_mode = False
+    auto_t = 0.0
+    show_hud = not args.hide_hud
+
+    last_time = time.time()
+
+    # Auto movement pattern generator
+    class AutoMovement:
+        def __init__(self):
+            self.t = 0.0
+            self.freq1 = np.random.uniform(0.08, 0.15)
+            self.freq2 = np.random.uniform(0.04, 0.08)
+            self.freq3 = np.random.uniform(0.02, 0.05)
+            self.amp_yaw = np.random.uniform(12, 20)
+            self.amp_pitch = np.random.uniform(5, 10)
+
+        def update(self, dt):
+            self.t += dt
+            yaw = (math.sin(self.t * self.freq1 * 2 * math.pi) * self.amp_yaw * 0.6
+                   + math.sin(self.t * self.freq2 * 2 * math.pi) * self.amp_yaw * 0.3
+                   + math.sin(self.t * self.freq3 * 2 * math.pi) * self.amp_yaw * 0.1)
+            pitch = (math.sin(self.t * self.freq1 * 1.3 * 2 * math.pi + 1.2) * self.amp_pitch * 0.5
+                     + math.sin(self.t * self.freq2 * 0.7 * 2 * math.pi + 0.8) * self.amp_pitch * 0.5)
+            return yaw, pitch
+
+    auto_mover = AutoMovement()
+
+    def get_blended_frame(yaw_val, pitch_val, blink_val=0.0, smile_val=0.0):
+        """Get frame with bilinear interpolation between pre-rendered poses"""
+        yaw_min, yaw_max = float(yaw_vals[0]), float(yaw_vals[-1])
+        pitch_min, pitch_max = float(pitch_vals[0]), float(pitch_vals[-1])
+        yaw_clamped = max(yaw_min, min(yaw_max, yaw_val))
+        pitch_clamped = max(pitch_min, min(pitch_max, pitch_val))
+
+        yaw_step = float(yaw_vals[1] - yaw_vals[0])
+        pitch_step = float(pitch_vals[1] - pitch_vals[0])
+
+        yaw_idx = (yaw_clamped - yaw_min) / yaw_step
+        pitch_idx = (pitch_clamped - pitch_min) / pitch_step
+
+        y0 = int(math.floor(yaw_idx))
+        y1 = min(y0 + 1, len(yaw_vals) - 1)
+        p0 = int(math.floor(pitch_idx))
+        p1 = min(p0 + 1, len(pitch_vals) - 1)
+
+        fy = yaw_idx - y0
+        fp = pitch_idx - p0
+
+        def get_grid(pi, yi):
+            p = int(pitch_vals[np.clip(pi, 0, len(pitch_vals)-1)])
+            y = int(yaw_vals[np.clip(yi, 0, len(yaw_vals)-1)])
+            return grid.get((p, y))
+
+        f00 = get_grid(p0, y0)
+        f01 = get_grid(p0, y1)
+        f10 = get_grid(p1, y0)
+        f11 = get_grid(p1, y1)
+
+        if f00 is None:
+            return grid.get((0, 0))
+
+        # Bilinear interpolation
+        if f01 is None: f01 = f00
+        if f10 is None: f10 = f00
+        if f11 is None: f11 = f00
+
+        top = cv2.addWeighted(f00, 1 - fy, f01, fy, 0)
+        bottom = cv2.addWeighted(f10, 1 - fy, f11, fy, 0)
+        result = cv2.addWeighted(top, 1 - fp, bottom, fp, 0)
+
+        # Blend in blink expression
+        if blink_val > 0.05:
+            # Find best blink frame for current yaw
+            best_blink = None
+            yaw_int = int(round(yaw_clamped))
+            closest_yaw_key = None
+            min_dist = 999
+
+            for key in specials:
+                if key.startswith("blink_y"):
+                    ky = int(key.split("_y")[1])
+                    dist = abs(ky - yaw_int)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_yaw_key = key
+
+            if blink_val >= 0.5:
+                blink_key = closest_yaw_key if closest_yaw_key else "blink"
+            else:
+                blink_key = closest_yaw_key.replace("blink", "blink_half") if closest_yaw_key else "blink_half"
+                if blink_key not in specials:
+                    blink_key = closest_yaw_key if closest_yaw_key else "blink"
+
+            blink_frame = specials.get(blink_key, specials.get("blink"))
+            if blink_frame is not None:
+                blend = min(1.0, blink_val)
+                result = cv2.addWeighted(result, 1 - blend, blink_frame, blend, 0)
+
+        # Blend in smile
+        if smile_val > 0.1:
+            if smile_val >= 0.5:
+                smile_frame = specials.get("smile", specials.get("smile_half"))
+            else:
+                smile_frame = specials.get("smile_half", specials.get("smile"))
+
+            if smile_frame is not None:
+                blend = min(1.0, smile_val * 0.7)
+                result = cv2.addWeighted(result, 1 - blend, smile_frame, blend, 0)
+
+        return result
+
+    print("Running! Face animation active.\n")
 
     while True:
-        key = cv2.waitKey(33) & 0xFF
+        now = time.time()
+        dt = min(now - last_time, 0.1)
+        last_time = now
+
+        key = cv2.waitKey(16) & 0xFF
 
         if key == 27:
             break
-        elif key == ord('p') or key == ord('P'):
-            auto_loop = not auto_loop
-            print(f"Auto-loop: {'ON' if auto_loop else 'OFF'}")
-        elif key == ord('a') or key == ord('A'):
-            cur_yaw_idx = max(0, cur_yaw_idx - 1); auto_loop = False; expression = None
-        elif key == ord('d') or key == ord('D'):
-            cur_yaw_idx = min(len(yaw_vals)-1, cur_yaw_idx + 1); auto_loop = False; expression = None
-        elif key == ord('w') or key == ord('W'):
-            cur_pitch_idx = max(0, cur_pitch_idx - 1); auto_loop = False; expression = None
-        elif key == ord('s') or key == ord('S'):
-            cur_pitch_idx = min(len(pitch_vals)-1, cur_pitch_idx + 1); auto_loop = False; expression = None
-        elif key == ord('b') or key == ord('B'):
-            expression = "blink" if expression != "blink" else None
-        elif key == ord('n') or key == ord('N'):
-            expression = "smile" if expression != "smile" else None
-        elif key == ord('m') or key == ord('M'):
-            expression = "mouth" if expression != "mouth" else None
-        elif key == ord('r') or key == ord('R'):
-            cur_yaw_idx = len(yaw_vals) // 2; cur_pitch_idx = len(pitch_vals) // 2
-            expression = None; auto_loop = False
-        elif key == ord('g') or key == ord('G'):
+        elif key in (ord('a'), ord('A')):
+            target_yaw = max(-30, target_yaw - move_speed)
+            auto_mode = False
+        elif key in (ord('d'), ord('D')):
+            target_yaw = min(30, target_yaw + move_speed)
+            auto_mode = False
+        elif key in (ord('w'), ord('W')):
+            target_pitch = max(-20, target_pitch - move_speed)
+            auto_mode = False
+        elif key in (ord('s'), ord('S')):
+            target_pitch = min(20, target_pitch + move_speed)
+            auto_mode = False
+        elif key in (ord('q'), ord('Q')):
+            target_roll = max(-10, target_roll - 1.0)
+            auto_mode = False
+        elif key in (ord('e'), ord('E')):
+            target_roll = min(10, target_roll + 1.0)
+            auto_mode = False
+        elif key in (ord('b'), ord('B')):
+            behavior.force_blink()
+        elif key in (ord('n'), ord('N')):
+            behavior.smile_target = 0.8 if behavior.smile_target < 0.1 else 0.0
+        elif key in (ord('m'), ord('M')):
+            pass  # mouth handled differently now
+        elif key in (ord('p'), ord('P')):
+            auto_mode = not auto_mode
+            if auto_mode:
+                auto_mover = AutoMovement()
+                print("Auto movement: ON")
+            else:
+                print("Auto movement: OFF")
+        elif key in (ord('h'), ord('H')):
+            show_hud = not show_hud
+        elif key in (ord('r'), ord('R')):
+            target_yaw = target_pitch = target_roll = 0
+            yaw_smooth.snap(0)
+            pitch_smooth.snap(0)
+            roll_smooth.snap(0)
+            auto_mode = False
+            behavior.smile_target = 0.0
+        elif key in (ord('+'), ord('=')):
+            move_speed = min(8.0, move_speed + 0.5)
+            print(f"Move speed: {move_speed}")
+        elif key in (ord('-'), ord('_')):
+            move_speed = max(0.5, move_speed - 0.5)
+            print(f"Move speed: {move_speed}")
+        elif key in (ord('g'), ord('G')):
             path = generate_ai_face()
             if path:
                 img = cv2.imread(path)
@@ -750,9 +993,9 @@ def main():
                     engine.prepare_source(img)
                     engine._debug_printed = False
                     grid, specials, yaw_vals, pitch_vals = prerender_poses(engine)
-                    cur_yaw_idx = len(yaw_vals) // 2
-                    cur_pitch_idx = len(pitch_vals) // 2
-        elif key == ord('l') or key == ord('L'):
+                    target_yaw = target_pitch = target_roll = 0
+                    yaw_smooth.snap(0); pitch_smooth.snap(0); roll_smooth.snap(0)
+        elif key in (ord('l'), ord('L')):
             try:
                 import tkinter as tk
                 from tkinter import filedialog
@@ -760,41 +1003,62 @@ def main():
                 path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp")])
                 root.destroy()
                 if path:
+                    save_face_to_gallery(path)
                     img = cv2.imread(path)
                     if img is not None:
                         engine.prepare_source(img)
                         engine._debug_printed = False
                         grid, specials, yaw_vals, pitch_vals = prerender_poses(engine)
-                        cur_yaw_idx = len(yaw_vals) // 2
-                        cur_pitch_idx = len(pitch_vals) // 2
+                        target_yaw = target_pitch = target_roll = 0
+                        yaw_smooth.snap(0); pitch_smooth.snap(0); roll_smooth.snap(0)
             except:
                 pass
 
-        if auto_loop:
-            blink_timer += 1
-            if blink_timer == 90:
-                expression = "blink"
-            elif blink_timer == 94:
-                expression = None
-            elif blink_timer > 200:
-                blink_timer = 0
+        # Auto movement
+        if auto_mode:
+            auto_yaw, auto_pitch = auto_mover.update(dt)
+            target_yaw = auto_yaw
+            target_pitch = auto_pitch
 
-            cur_pitch_idx, cur_yaw_idx = loop_seq[loop_idx % len(loop_seq)]
-            loop_idx += 1
+        # Natural behavior (always active)
+        nat = behavior.update(dt)
 
-        frame = get_frame(cur_pitch_idx, cur_yaw_idx, expression)
+        # Smooth interpolation of head position
+        yaw_smooth.set_target(target_yaw + nat["micro_yaw"])
+        pitch_smooth.set_target(target_pitch + nat["micro_pitch"])
+        roll_smooth.set_target(target_roll + nat["micro_roll"])
+
+        cur_yaw = yaw_smooth.update(dt)
+        cur_pitch = pitch_smooth.update(dt)
+        cur_roll = roll_smooth.update(dt)
+
+        # Get blended frame
+        frame = get_blended_frame(cur_yaw, cur_pitch, nat["blink"], nat["smile"])
+
         if frame is not None:
             display = frame.copy()
-            p_val = pitch_vals[np.clip(cur_pitch_idx, 0, len(pitch_vals)-1)]
-            y_val = yaw_vals[np.clip(cur_yaw_idx, 0, len(yaw_vals)-1)]
-            mode = "AUTO-LOOP" if auto_loop else "MANUAL"
-            info = f"Yaw:{y_val:.0f} Pitch:{p_val:.0f} [{mode}]"
-            cv2.putText(display, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+            # Resize if needed
+            if display.shape[0] != RES:
+                display = cv2.resize(display, (RES, RES), interpolation=cv2.INTER_LINEAR)
+
+            if show_hud:
+                mode_str = "AUTO" if auto_mode else "MANUAL"
+                info = f"Y:{cur_yaw:.1f} P:{cur_pitch:.1f} R:{cur_roll:.1f} [{mode_str}]"
+                cv2.putText(display, info, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 0), 1)
+                if nat["blink"] > 0.1:
+                    cv2.putText(display, "BLINK", (RES - 60, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 200, 255), 1)
+
             cv2.imshow("AI Face Cam", display)
 
             if vcam is not None:
                 try:
-                    vcam_frame = cv2.resize(frame, (512, 512))
+                    vcam_frame = display if display.shape[0] == RES else cv2.resize(display, (RES, RES))
+                    # Remove HUD for virtual cam output
+                    if show_hud:
+                        vcam_frame = frame.copy()
+                        if vcam_frame.shape[0] != RES:
+                            vcam_frame = cv2.resize(vcam_frame, (RES, RES), interpolation=cv2.INTER_LINEAR)
                     vcam.send(vcam_frame)
                 except:
                     pass

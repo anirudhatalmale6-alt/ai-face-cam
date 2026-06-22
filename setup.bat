@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo   AI Face Cam - Setup
+echo   AI Face Cam v2 - Setup
 echo ========================================
 echo.
 
@@ -13,22 +13,24 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/4] Creating virtual environment...
+echo [1/3] Creating virtual environment...
 python -m venv venv
 call venv\Scripts\activate.bat
 
-echo [2/4] Installing PyTorch with CUDA...
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+echo [2/3] Installing dependencies...
+pip install opencv-python numpy pyvirtualcam onnxruntime
 
-echo [3/4] Installing dependencies...
-pip install opencv-python numpy scipy pillow pyvirtualcam onnxruntime-gpu insightface
+echo.
+echo For NVIDIA GPU acceleration (much faster), also run:
+echo   pip install onnxruntime-gpu
+echo.
 
-echo [4/4] Downloading face models...
-python download_models.py
+echo [3/3] AI models will download on first run.
 
 echo.
 echo ========================================
 echo   Setup complete!
-echo   Run: run.bat face_photo.png
+echo   Run: run.bat [face_photo.png]
+echo   Or just: run.bat (for face gallery)
 echo ========================================
 pause
