@@ -21,14 +21,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install opencv-python numpy "onnxruntime-directml==1.22.0" pyvirtualcam pyinstaller
+          pip install opencv-python numpy "onnxruntime-directml==1.24.4" pyvirtualcam pyinstaller
 
       - name: Download ORT SDK headers
         run: |
-          curl -sL -o ort_sdk.zip "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip"
+          curl -sL -o ort_sdk.zip "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip"
           python -c "import zipfile; z=zipfile.ZipFile('ort_sdk.zip'); [z.extract(f,'ort_sdk') for f in z.namelist() if '/include/' in f]"
           mkdir ort_include 2>nul
-          copy ort_sdk\onnxruntime-win-x64-1.22.0\include\*.h ort_include\
+          copy ort_sdk\onnxruntime-win-x64-1.24.4\include\*.h ort_include\
           dir ort_include
 
       - name: Setup MSVC
@@ -48,7 +48,7 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --collect-all onnxruntime_directml --hidden-import pyvirtualcam --add-data "grid_sample_3d_ort.dll;." --add-data "${{ steps.cv2path.outputs.CV2_DATA }};cv2/data" live_portrait_onnx.py
+          pyinstaller --onefile --name AIFaceCamLive --console --collect-all onnxruntime --hidden-import pyvirtualcam --add-data "grid_sample_3d_ort.dll;." --add-data "${{ steps.cv2path.outputs.CV2_DATA }};cv2/data" live_portrait_onnx.py
 
       - name: Verify exe exists
         run: |
