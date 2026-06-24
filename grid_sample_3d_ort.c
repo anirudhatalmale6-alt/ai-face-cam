@@ -1,5 +1,5 @@
 /*
- * GridSample3D custom operator for ONNX Runtime 1.26.0
+ * GridSample3D custom operator for ONNX Runtime 1.24.x
  * Implements trilinear interpolation for 5D tensors
  * align_corners=False, padding_mode=zeros, mode=bilinear (trilinear for 3D)
  */
