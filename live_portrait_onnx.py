@@ -732,8 +732,8 @@ def main():
 
     # Pre-render poses with finer granularity
     def prerender_poses(eng):
-        yaw_step = 2
-        pitch_step = 2
+        yaw_step = 5
+        pitch_step = 5
         yaw_vals = np.arange(-30, 31, yaw_step)
         pitch_vals = np.arange(-20, 21, pitch_step)
         grid = {}
@@ -778,7 +778,7 @@ def main():
         # Pre-render blink at a few yaw positions for smooth blinking during head turns
         print("\n  Pre-rendering expressions at different head positions...")
         extra = 0
-        for yaw_off in [-15, -9, -3, 3, 9, 15]:
+        for yaw_off in [-15, -5, 5, 15]:
             for blink_lbl, blink_val in [("blink", 1.0), ("blink_half", 0.5)]:
                 out = eng.animate_keyboard(0, float(yaw_off), 0, blink=blink_val)
                 if out is not None:
