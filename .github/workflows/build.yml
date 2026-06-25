@@ -68,7 +68,7 @@ jobs:
             ### First run:
             - Downloads AI models automatically (~600MB, one time only)
             - Needs internet for first run, works offline after that
-            - NVIDIA GPU (CUDA) used automatically if available
+            - GPU acceleration via DirectML (NVIDIA/AMD, no CUDA install needed)
 
             ### How to use:
             1. Download AIFaceCamLive.exe below

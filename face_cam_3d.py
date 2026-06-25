@@ -186,6 +186,8 @@ class DepthFaceAnimator:
         self.smile = 0.0
         self.mouth_open = 0.0
         self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
 
         self.micro_t = 0.0
         self.auto_blink_timer = time.time() + np.random.uniform(2, 5)
@@ -438,8 +440,8 @@ class DepthFaceAnimator:
         scale = min(CAM_WIDTH / self.img_w, CAM_HEIGHT / self.img_h) * 0.85 * self.zoom
         scaled = cv2.resize(warped, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
         sh, sw = scaled.shape[:2]
-        ox = (CAM_WIDTH - sw) // 2
-        oy = (CAM_HEIGHT - sh) // 2
+        ox = (CAM_WIDTH - sw) // 2 + int(self.pan_x)
+        oy = (CAM_HEIGHT - sh) // 2 + int(self.pan_y)
 
         src_x1 = max(0, -ox)
         src_y1 = max(0, -oy)
@@ -548,6 +550,10 @@ class FaceCam3DApp:
         print("    A/D     Turn head left/right")
         print("    W/S     Look up/down")
         print("    Q/E     Tilt head")
+        print("  Position (for oval fit):")
+        print("    I/K     Move face up/down")
+        print("    J/O     Move face left/right")
+        print("    +/-     Zoom in/out (up to 4x)")
         print("  Expressions:")
         print("    B       Blink")
         print("    N       Smile")
@@ -555,8 +561,7 @@ class FaceCam3DApp:
         print("  Other:")
         print("    G       Generate new AI face")
         print("    L       Load your own photo")
-        print("    +/-     Zoom in/out")
-        print("    R       Reset position")
+        print("    R       Reset everything")
         print("    ESC     Quit")
         if self.virtual_cam:
             print(f"\n  WEBCAM ACTIVE: {self.virtual_cam.device}")
@@ -597,10 +602,13 @@ class FaceCam3DApp:
                 frame_times.pop(0)
             avg_fps = 1.0 / (sum(frame_times) / len(frame_times)) if frame_times else 0
 
-            info = f"FPS:{avg_fps:.0f} Yaw:{self.animator.yaw:.0f} Pitch:{self.animator.pitch:.0f}"
+            info = f"FPS:{avg_fps:.0f} Yaw:{self.animator.yaw:.0f} Pitch:{self.animator.pitch:.0f} Zoom:{self.animator.zoom:.1f}x"
             cv2.putText(frame, info, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 0), 1)
-            cv2.putText(frame, "G=New Face  L=Load Photo", (10, CAM_HEIGHT - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+            if abs(self.animator.pan_x) > 1 or abs(self.animator.pan_y) > 1:
+                pan_info = f"Pan: X:{self.animator.pan_x:.0f} Y:{self.animator.pan_y:.0f}"
+                cv2.putText(frame, pan_info, (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 180, 180), 1)
+            cv2.putText(frame, "I/J/K/O=Move  +/-=Zoom  R=Reset", (10, CAM_HEIGHT - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.32, (150, 150, 150), 1)
 
             if self.virtual_cam:
                 cv2.putText(frame, "LIVE", (CAM_WIDTH - 50, 20),
@@ -622,6 +630,7 @@ class FaceCam3DApp:
 
     def _handle_key(self, key):
         spd = 2.0
+        pan_spd = 5.0
         if key == 27:
             self.running = False
         elif key in (ord('a'), ord('A')):
@@ -644,13 +653,23 @@ class FaceCam3DApp:
         elif key in (ord('n'), ord('N')):
             self.target_smile = 0.0 if self.target_smile > 0.3 else 0.8
         elif key in (ord('+'), ord('=')):
-            self.animator.zoom = min(2.0, self.animator.zoom + 0.05)
+            self.animator.zoom = min(4.0, self.animator.zoom + 0.05)
         elif key in (ord('-'), ord('_')):
-            self.animator.zoom = max(0.5, self.animator.zoom - 0.05)
+            self.animator.zoom = max(0.3, self.animator.zoom - 0.05)
+        elif key == 82 or key in (ord('i'), ord('I')):
+            self.animator.pan_y -= pan_spd
+        elif key == 84 or key in (ord('k'), ord('K')):
+            self.animator.pan_y += pan_spd
+        elif key == 81 or key in (ord('j'), ord('J')):
+            self.animator.pan_x -= pan_spd
+        elif key == 83 or key in (ord('o'), ord('O')):
+            self.animator.pan_x += pan_spd
         elif key in (ord('r'), ord('R')):
             self.target_yaw = self.target_pitch = self.target_roll = 0
             self.target_smile = 0
             self.animator.zoom = 1.0
+            self.animator.pan_x = 0.0
+            self.animator.pan_y = 0.0
             self.animator.mouth_open = 0.0
         elif key in (ord('g'), ord('G')):
             self._generate_new_face()
